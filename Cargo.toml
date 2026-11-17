@@ -1,0 +1,15 @@
+[package]
+name = "lsi"
+version = "0.1.0"
+edition = "2021"
+description = "An interactive eza-like terminal file explorer with Nerd Fonts and themes"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
+libc = "0.2.191"
+open = "5.4.5"
+ratatui = "0.30.2"
+unicode-width = "0.2.3"
