@@ -150,24 +150,17 @@ impl App {
         self.visible_entries.get(idx)
     }
 
-    /// Returns counts of `(directories, files)` in `visible_entries`.
-    pub fn visible_counts(&self) -> (usize, usize) {
-        let dirs = self.visible_entries.iter().filter(|e| e.is_dir).count();
-        let files = self.visible_entries.len().saturating_sub(dirs);
-        (dirs, files)
-    }
-
     /// Computes the desired inline viewport height based on visible entries, capped at `max_rows`.
     pub fn desired_inline_height(&self) -> u16 {
         if self.input_mode == InputMode::Help || self.show_preview {
             return self.max_rows;
         }
         let entry_rows = u16::try_from(self.visible_entries.len().max(1)).unwrap_or(u16::MAX);
-        let chrome_rows: u16 = if self.max_rows < 10 { 4 } else { 8 };
+        let chrome_rows: u16 = if self.max_rows < 6 { 2 } else { 5 };
         chrome_rows
             .saturating_add(entry_rows)
             .min(self.max_rows)
-            .max(4.min(self.max_rows))
+            .max(3.min(self.max_rows))
     }
 
     /// Reloads entries from `self.current_dir`, optionally selecting `preferred_name`.
@@ -191,9 +184,7 @@ impl App {
             .all_entries
             .iter()
             .filter(|entry| self.show_hidden || !entry.is_hidden)
-            .filter(|entry| {
-                query.is_empty() || entry.name.to_ascii_lowercase().contains(&query)
-            })
+            .filter(|entry| query.is_empty() || entry.name.to_ascii_lowercase().contains(&query))
             .cloned()
             .collect();
 
@@ -324,7 +315,10 @@ impl App {
     }
 
     /// Opens the currently selected folder or file.
-    pub fn open_selected(&mut self, force_editor: bool) -> AppAction {
+    ///
+    /// Text files open in `$EDITOR` inside the current terminal unless `force_system_open` is true,
+    /// while binary/media files use the system opener (`xdg-open` / `open::that_detached`).
+    pub fn open_selected(&mut self, force_system_open: bool) -> AppAction {
         let Some(entry) = self.selected_entry().cloned() else {
             return AppAction::None;
         };
@@ -340,7 +334,7 @@ impl App {
             return AppAction::None;
         }
 
-        if force_editor {
+        if !force_system_open && is_likely_text_file(&entry.path) {
             return AppAction::OpenEditor(entry.path);
         }
 
@@ -382,6 +376,26 @@ impl App {
         }
     }
 
+    /// Opens the currently selected file unconditionally in `$EDITOR` (or navigates if directory).
+    pub fn open_in_editor(&mut self) -> AppAction {
+        let Some(entry) = self.selected_entry().cloned() else {
+            return AppAction::None;
+        };
+
+        if entry.is_dir {
+            let remembered = self.dir_selection_memory.get(&entry.path).cloned();
+            self.navigate_to(entry.path, remembered, true);
+            return AppAction::None;
+        }
+
+        if entry.symlink_broken {
+            self.status_message = Some(format!("Broken symlink: {}", entry.name));
+            return AppAction::None;
+        }
+
+        AppAction::OpenEditor(entry.path)
+    }
+
     /// Moves selection by `delta` rows, clamping to valid bounds.
     pub fn move_selection(&mut self, delta: isize) {
         if self.visible_entries.is_empty() {
@@ -412,7 +426,8 @@ impl App {
         if self.visible_entries.is_empty() {
             self.table_state.select(None);
         } else {
-            self.table_state.select(Some(self.visible_entries.len() - 1));
+            self.table_state
+                .select(Some(self.visible_entries.len() - 1));
             self.remember_current_selection();
             self.update_preview(false);
         }
@@ -521,10 +536,9 @@ impl App {
                 self.go_parent();
                 AppAction::None
             }
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter | KeyCode::Char('O') => {
-                self.open_selected(false)
-            }
-            KeyCode::Char('e') => self.open_selected(true),
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.open_selected(false),
+            KeyCode::Char('O') => self.open_selected(true),
+            KeyCode::Char('e') => self.open_in_editor(),
 
             // Back / forward history
             KeyCode::Char('-') | KeyCode::Char('[') | KeyCode::Char('b') => {
@@ -615,7 +629,11 @@ impl App {
                 self.refresh_visible_entries(None);
                 self.status_message = Some(format!(
                     "Sort order: {}",
-                    if self.sort_reverse { "descending" } else { "ascending" }
+                    if self.sort_reverse {
+                        "descending"
+                    } else {
+                        "ascending"
+                    }
                 ));
                 AppAction::None
             }
@@ -677,11 +695,7 @@ impl App {
     }
 }
 
-fn build_preview(
-    entry: &FileEntry,
-    cache: &mut IdentityCache,
-    show_hidden: bool,
-) -> PreviewData {
+fn build_preview(entry: &FileEntry, cache: &mut IdentityCache, show_hidden: bool) -> PreviewData {
     if entry.symlink_broken {
         return PreviewData::Error(format!(
             "Broken symlink -> {}",
@@ -769,9 +783,7 @@ fn resolve_initial_path(arg_path: Option<&Path>) -> Result<(PathBuf, Option<Stri
         let dir = fs::canonicalize(&target).unwrap_or(target);
         Ok((dir, None))
     } else {
-        let file_name = target
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned());
+        let file_name = target.file_name().map(|n| n.to_string_lossy().into_owned());
         let parent = target
             .parent()
             .map(Path::to_path_buf)
@@ -885,7 +897,10 @@ mod tests {
 
         // Enter alpha_dir
         app.handle_key(KeyEvent::from(KeyCode::Enter));
-        assert_eq!(app.current_dir, fs::canonicalize(root.join("alpha_dir")).unwrap());
+        assert_eq!(
+            app.current_dir,
+            fs::canonicalize(root.join("alpha_dir")).unwrap()
+        );
         assert_eq!(app.back_stack.len(), 1);
 
         // Go back to parent with 'h'
@@ -895,7 +910,10 @@ mod tests {
 
         // History back/forward ('-' goes back to alpha_dir because 'h' pushed alpha_dir onto back_stack)
         app.handle_key(KeyEvent::from(KeyCode::Char('-')));
-        assert_eq!(app.current_dir, fs::canonicalize(root.join("alpha_dir")).unwrap());
+        assert_eq!(
+            app.current_dir,
+            fs::canonicalize(root.join("alpha_dir")).unwrap()
+        );
         assert_eq!(app.forward_stack.len(), 1);
 
         // '+' goes forward back to root
@@ -946,30 +964,50 @@ mod tests {
     fn desired_inline_height_scales_and_caps_at_max_rows() {
         let root = make_test_tree();
         // root has 3 non-hidden entries: alpha_dir, beta_dir, main.rs
-        let args = Args::try_parse_from(["lsi", "-n", "12", root.to_str().unwrap()]).unwrap();
+        let args = Args::try_parse_from(["lsi", "-n", "9", root.to_str().unwrap()]).unwrap();
         let mut app = App::new(args).unwrap();
         assert_eq!(app.visible_entries.len(), 3);
-        assert_eq!(app.desired_inline_height(), 11);
+        assert_eq!(app.desired_inline_height(), 8);
 
-        // Showing hidden adds .hidden_dir and .env -> 5 entries => 8 + 5 = 13, capped at 12
+        // Showing hidden adds .hidden_dir and .env -> 5 entries => 5 + 5 = 10, capped at 9
         app.handle_key(KeyEvent::from(KeyCode::Char('.')));
         assert_eq!(app.visible_entries.len(), 5);
-        assert_eq!(app.desired_inline_height(), 12);
+        assert_eq!(app.desired_inline_height(), 9);
 
         // Help or preview uses full max_rows
         app.handle_key(KeyEvent::from(KeyCode::Char('.')));
-        assert_eq!(app.desired_inline_height(), 11);
+        assert_eq!(app.desired_inline_height(), 8);
         app.handle_key(KeyEvent::from(KeyCode::Char('v')));
-        assert_eq!(app.desired_inline_height(), 12);
+        assert_eq!(app.desired_inline_height(), 9);
         app.handle_key(KeyEvent::from(KeyCode::Char('v')));
-        assert_eq!(app.desired_inline_height(), 11);
+        assert_eq!(app.desired_inline_height(), 8);
         app.handle_key(KeyEvent::from(KeyCode::Char('?')));
-        assert_eq!(app.desired_inline_height(), 12);
+        assert_eq!(app.desired_inline_height(), 9);
 
-        // Small max_rows (< 10) uses compact chrome (4)
-        let small_args = Args::try_parse_from(["lsi", "-n", "8", root.to_str().unwrap()]).unwrap();
+        // Small max_rows (< 6) uses compact chrome (2)
+        let small_args = Args::try_parse_from(["lsi", "-n", "5", root.to_str().unwrap()]).unwrap();
         let small_app = App::new(small_args).unwrap();
-        assert_eq!(small_app.desired_inline_height(), 7);
+        assert_eq!(small_app.desired_inline_height(), 5);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enter_and_l_open_text_files_in_editor() {
+        let root = make_test_tree();
+        let file_path = fs::canonicalize(root.join("main.rs")).unwrap();
+        let args = Args::try_parse_from(["lsi", file_path.to_str().unwrap()]).unwrap();
+        let mut app = App::new(args).unwrap();
+
+        assert_eq!(app.selected_entry().unwrap().name, "main.rs");
+        assert_eq!(
+            app.handle_key(KeyEvent::from(KeyCode::Enter)),
+            AppAction::OpenEditor(file_path.clone())
+        );
+        assert_eq!(
+            app.handle_key(KeyEvent::from(KeyCode::Char('l'))),
+            AppAction::OpenEditor(file_path)
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -1,11 +1,7 @@
-use std::path::Path;
-
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, Wrap,
-};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, Wrap};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -18,7 +14,7 @@ use crate::theme::Theme;
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let theme = app.theme();
     let area = frame.area();
-    let compact = area.height < 10;
+    let compact = area.height < 6;
 
     // Paint background across the full frame.
     frame.render_widget(
@@ -26,93 +22,28 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         area,
     );
 
-    let (header_h, footer_h) = if compact { (1, 1) } else { (3, 2) };
+    let footer_h = if compact { 1 } else { 2 };
     let root_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_h),
-            Constraint::Min(1),
-            Constraint::Length(footer_h),
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(footer_h)])
         .split(area);
-
-    render_header(frame, app, &theme, root_chunks[0], compact);
 
     if app.show_preview && area.width >= 60 {
         let body_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(root_chunks[1]);
+            .split(root_chunks[0]);
         render_table(frame, app, &theme, body_chunks[0], compact);
         render_preview(frame, app, &theme, body_chunks[1], compact);
     } else {
-        render_table(frame, app, &theme, root_chunks[1], compact);
+        render_table(frame, app, &theme, root_chunks[0], compact);
     }
 
-    render_footer(frame, app, &theme, root_chunks[2], compact);
+    render_footer(frame, app, &theme, root_chunks[1], compact);
 
     if app.input_mode == InputMode::Help {
         render_help_modal(frame, &theme, area);
     }
-}
-
-fn render_header(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compact: bool) {
-    let (dir_count, file_count) = app.visible_counts();
-    let display_path = format_display_path(&app.current_dir);
-
-    let mut spans = Vec::new();
-    if app.show_icons {
-        spans.push(Span::styled(
-            "\u{f07c} ",
-            Style::default().fg(theme.dir_fg).add_modifier(Modifier::BOLD),
-        ));
-    }
-    spans.push(Span::styled(
-        display_path,
-        Style::default()
-            .fg(theme.header_fg)
-            .add_modifier(Modifier::BOLD),
-    ));
-    spans.push(Span::styled(
-        format!("  ({dir_count} dirs, {file_count} files)"),
-        Style::default().fg(theme.muted),
-    ));
-
-    if app.show_hidden {
-        spans.push(Span::styled("  [hidden]", Style::default().fg(theme.accent)));
-    }
-
-    let arrow = if app.sort_reverse { "↓" } else { "↑" };
-    spans.push(Span::styled(
-        format!("  [sort: {} {arrow}]", app.sort_field.as_str()),
-        Style::default().fg(theme.muted),
-    ));
-
-    spans.push(Span::styled(
-        format!("  [theme: {}]", app.theme_name.as_str()),
-        Style::default().fg(theme.accent),
-    ));
-
-    if !app.search_query.is_empty() {
-        spans.push(Span::styled(
-            format!("  [filter: \"{}\"]", app.search_query),
-            Style::default()
-                .fg(theme.code_fg)
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-
-    let header_block = if compact {
-        Block::default().style(Style::default().bg(theme.header_bg).fg(theme.header_fg))
-    } else {
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.border))
-            .style(Style::default().bg(theme.header_bg).fg(theme.header_fg))
-    };
-    let header = Paragraph::new(Line::from(spans)).block(header_block);
-    frame.render_widget(header, area);
 }
 
 fn render_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, compact: bool) {
@@ -335,7 +266,11 @@ fn name_line<'a>(entry: &FileEntry, show_icons: bool, theme: &Theme) -> Line<'a>
     Line::from(spans)
 }
 
-fn category_color(entry: &FileEntry, category: IconCategory, theme: &Theme) -> ratatui::style::Color {
+fn category_color(
+    entry: &FileEntry,
+    category: IconCategory,
+    theme: &Theme,
+) -> ratatui::style::Color {
     if entry.symlink_broken {
         return theme.broken_symlink_fg;
     }
@@ -495,7 +430,10 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
         )];
 
         if let Some(msg) = &app.status_message {
-            spans.push(Span::styled(msg.clone(), Style::default().fg(theme.code_fg)));
+            spans.push(Span::styled(
+                msg.clone(),
+                Style::default().fg(theme.code_fg),
+            ));
         } else if let Some(entry) = app.selected_entry() {
             let perm = format_permissions(entry.mode, entry.is_dir, entry.is_symlink);
             let (num, unit) = format_size(entry.size, entry.is_dir);
@@ -563,13 +501,17 @@ fn render_help_modal(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("j / k / Down / Up", "Scroll down / up"),
         ("g / G / Home / End", "Jump to top / bottom"),
         ("Ctrl+d / Ctrl+u / PgDn / PgUp", "Page down / up"),
-        ("l / Right / Enter / O", "Open folder or file"),
+        ("l / Right / Enter", "Open folder or file in $EDITOR"),
+        ("O", "Open file with system opener (xdg-open)"),
         ("e", "Open file in $EDITOR"),
         ("h / Left / Backspace", "Go to parent directory"),
         ("- / [ / b   and   + / ] / w", "History back / forward"),
         ("~   and   R / F5", "Jump to home / refresh"),
         (". / a", "Toggle hidden files & folders"),
-        ("p / o / t / S / i", "Toggle perms / owner / time / size / icons"),
+        (
+            "p / o / t / S / i",
+            "Toggle perms / owner / time / size / icons",
+        ),
         ("L", "Toggle all long metadata columns"),
         ("T / c", "Cycle color themes"),
         ("s / r / d", "Cycle sort / reverse / dirs-first"),
@@ -599,8 +541,7 @@ fn render_help_modal(frame: &mut Frame, theme: &Theme, area: Rect) {
                 .title(" lsi Keybinds (press ? or Esc to close, q to quit) ")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(theme.accent))
-                .style(Style::default().bg(theme.header_bg).fg(theme.fg)),
+                .border_style(Style::default().fg(theme.accent)),
         )
         .wrap(Wrap { trim: false });
 
@@ -611,18 +552,6 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     Rect::new(x, y, width, height)
-}
-
-fn format_display_path(path: &Path) -> String {
-    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
-        if let Ok(rest) = path.strip_prefix(&home) {
-            if rest.as_os_str().is_empty() {
-                return "~".to_string();
-            }
-            return format!("~/{}", rest.display());
-        }
-    }
-    path.display().to_string()
 }
 
 #[cfg(test)]
@@ -641,7 +570,11 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join("src")).unwrap();
         fs::write(base.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
-        fs::write(base.join("src/main.rs"), "fn main() { println!(\"hi\"); }\n").unwrap();
+        fs::write(
+            base.join("src/main.rs"),
+            "fn main() { println!(\"hi\"); }\n",
+        )
+        .unwrap();
 
         let args = Args::try_parse_from([
             "lsi",
@@ -683,11 +616,11 @@ mod tests {
         fs::create_dir_all(base.join("src")).unwrap();
         fs::write(base.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
 
-        // Standard inline viewport (height >= 10) anchored at non-zero cursor row y = 5
+        // Standard inline viewport (height >= 6) anchored at non-zero cursor row y = 5
         let args = Args::try_parse_from(["lsi", "-n", "12", base.to_str().unwrap()]).unwrap();
         let mut app = App::new(args).unwrap();
         let height = app.desired_inline_height();
-        assert_eq!(height, 10);
+        assert_eq!(height, 7);
 
         let mut backend = TestBackend::new(100, 30);
         backend.set_cursor_position(Position::new(0, 5)).unwrap();
@@ -698,19 +631,19 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(terminal.get_frame().area(), Rect::new(0, 5, 100, 10));
+        assert_eq!(terminal.get_frame().area(), Rect::new(0, 5, 100, 7));
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let out = buffer_to_string(&terminal);
         assert!(out.contains("Cargo.toml"));
         assert!(out.contains("src"));
 
-        // Compact inline viewport (height < 10) anchored at non-zero cursor row y = 4
+        // Compact inline viewport (height < 6) anchored at non-zero cursor row y = 4
         let compact_args =
-            Args::try_parse_from(["lsi", "-n", "7", base.to_str().unwrap()]).unwrap();
+            Args::try_parse_from(["lsi", "-n", "5", base.to_str().unwrap()]).unwrap();
         let mut compact_app = App::new(compact_args).unwrap();
         let compact_h = compact_app.desired_inline_height();
-        assert_eq!(compact_h, 6);
+        assert_eq!(compact_h, 4);
 
         let mut compact_backend = TestBackend::new(100, 20);
         compact_backend
@@ -723,10 +656,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(
-            compact_terminal.get_frame().area(),
-            Rect::new(0, 4, 100, 6)
-        );
+        assert_eq!(compact_terminal.get_frame().area(), Rect::new(0, 4, 100, 4));
 
         compact_terminal
             .draw(|frame| draw(frame, &mut compact_app))
