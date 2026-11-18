@@ -1,5 +1,6 @@
 mod app;
 mod cli;
+mod config;
 mod fs_entry;
 mod icons;
 mod theme;
@@ -28,6 +29,7 @@ type InlineTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    let cwd_file = args.cwd_file.clone();
     let mut app = App::new(args)?;
 
     install_panic_hook();
@@ -37,14 +39,19 @@ fn main() -> Result<()> {
 
     if let Err(err) = restore_terminal_modes() {
         eprintln!("Failed to restore terminal: {err}");
-    } else if run_result.is_ok() {
-        println!();
     }
 
-    run_result
+    match run_result {
+        Ok(change_dir) => {
+            println!();
+            app.write_cwd_file(cwd_file.as_deref(), change_dir)?;
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
 }
 
-fn run_event_loop(app: &mut App) -> Result<()> {
+fn run_event_loop(app: &mut App) -> Result<bool> {
     let mut current_height = app.desired_inline_height();
     let mut terminal = init_inline_terminal(current_height)?;
 
@@ -62,9 +69,9 @@ fn run_event_loop(app: &mut App) -> Result<()> {
 
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => match app.handle_key(key) {
-                AppAction::Quit => {
+                AppAction::Quit { change_dir } => {
                     finalize_inline_exit(&mut terminal)?;
-                    break;
+                    return Ok(change_dir);
                 }
                 AppAction::OpenEditor(path) => {
                     let origin = terminal.get_frame().area().as_position();
@@ -102,8 +109,6 @@ fn run_event_loop(app: &mut App) -> Result<()> {
             _ => {}
         }
     }
-
-    Ok(())
 }
 
 fn init_inline_terminal(height: u16) -> io::Result<InlineTerminal> {

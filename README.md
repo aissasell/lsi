@@ -57,13 +57,16 @@ lsi --theme catppuccin --sort modified --reverse ~/Projects
 | `-o, --ownership` | `--user` | Show owner and group columns |
 | `-t, --time` | `--date` | Show modification date and time column |
 | `-s, --size` | `--no-size` | Show (or hide) file size column (shown by default) |
-| `--no-icons` | | Disable Nerd Font icons |
-| `--theme <THEME>` | `eza-dark` (default), `catppuccin`, `dracula`, `nord`, `gruvbox`, `tokyo-night`, `solarized-light` | Initial color theme |
+| `--icons` / `--no-icons` | | Show or disable Nerd Font icons (enabled by default) |
+| `--borders` / `--no-borders` | | Show or hide borders around table and preview panes (enabled by default) |
+| `--footer` / `--no-footer` | | Show or hide the footer status and keybind hint bar (enabled by default) |
+| `--theme <THEME>` | `custom` (when `theme.toml` exists), `eza-dark` (default), `catppuccin`, `dracula`, `nord`, `gruvbox`, `tokyo-night`, `solarized-light` | Initial color theme |
 | `--sort <SORT>` | `name` (default), `size`, `modified`, `extension`, `type` | Initial sort field |
 | `-r, --reverse` | | Reverse sort order |
-| `--no-dirs-first` | | Do not group directories before files |
+| `--dirs-first` / `--no-dirs-first` | | Group (or do not group) directories before files |
 | `--preview` | | Start with the side-by-side preview pane open |
 | `-n, --max-rows <N>` | `--height`, default: `20` | Maximum inline terminal rows to use |
+| `--cwd-file <PATH>` | | Write the final working directory to this file when exiting with `q` |
 | `-h, --help` | | Print help |
 | `-V, --version` | | Print version |
 
@@ -95,22 +98,128 @@ lsi --theme catppuccin --sort modified --reverse ~/Projects
 | `t` | Toggle modification date & time column |
 | `S` | Toggle size column |
 | `i` | Toggle Nerd Font icons |
+| `B` | Toggle borders around table and preview panes |
+| `F` | Toggle footer status and keybind hint bar |
 | `L` | Toggle all long metadata columns at once |
-| `T` / `c` | Cycle color themes |
+| `T` / `c` | Cycle color themes (includes `custom` when `theme.toml` exists) |
 | `s` | Cycle sort field (`name`, `size`, `modified`, `ext`, `type`) |
 | `r` | Toggle reverse sort order |
 | `d` | Toggle directories-first grouping |
 | `v` / `Tab` | Toggle side-by-side preview pane |
 | `/` | Activate live filter (`Enter` to lock filter, `Esc` to clear) |
-| `Esc` | Clear active filter or status message |
+| `Esc` | Clear active filter, or exit without changing directory when no filter is active |
 | `?` | Toggle help overlay |
-| `q` / `Ctrl+c` | Exit `lsi` |
+| `q` | Exit `lsi` and change directory (writes `--cwd-file`) |
+| `Q` / `Ctrl+c` | Exit `lsi` without changing directory |
+
+## Shell Integration (Change Directory on Exit)
+
+Use `--cwd-file` in a shell wrapper function so pressing `q` changes your shell's working directory to the folder you navigated to, while pressing `Q` or `Esc` exits without changing directories.
+
+### Fish
+
+```fish
+function l
+    set tmp (mktemp -t "lsi-cwd.XXXXXX")
+    command lsi $argv --cwd-file="$tmp"
+    if read -z cwd <"$tmp"; and [ "$cwd" != "$PWD" ]; and test -d "$cwd"
+        builtin cd -- "$cwd"
+    end
+    rm -f -- "$tmp"
+end
+```
+
+### Bash / Zsh
+
+```bash
+function l() {
+    local tmp="$(mktemp -t "lsi-cwd.XXXXXX")" cwd
+    command lsi "$@" --cwd-file="$tmp"
+    IFS= read -r -d '' cwd < "$tmp"
+    if [ -n "$cwd" ] && [ "$cwd" != "$PWD" ] && [ -d "$cwd" ]; then
+        builtin cd -- "$cwd"
+    fi
+    rm -f -- "$tmp"
+}
+```
+
+## Configuration (`config.toml` & `theme.toml`)
+
+`lsi` looks for optional TOML configuration files in `$HOME/.config/lsi/`:
+
+- `$HOME/.config/lsi/config.toml` — Overrides hard-coded defaults (explicit CLI flags take priority over `config.toml`).
+- `$HOME/.config/lsi/theme.toml` — Defines a `custom` theme. When present, `custom` automatically becomes the default theme, while all built-in themes remain available when cycling with `T` / `c` or `--theme`.
+
+### Example `config.toml`
+
+```toml
+show_borders = true
+show_footer = true
+show_hidden = false
+long = false
+show_permissions = false
+show_ownership = false
+show_time = false
+show_size = true
+show_icons = true
+show_preview = false
+dirs_first = true
+reverse = false
+sort = "name"        # name, size, modified, extension (or ext), type
+# theme = "eza-dark" # optional override: custom, eza-dark, catppuccin, dracula, nord, gruvbox, tokyo-night, solarized-light
+max_rows = 20
+```
+
+### Example `theme.toml`
+
+Colors accept hex strings (`"#rrggbb"` / `"rrggbb"`), RGB arrays (`[r, g, b]`), `"rgb(r, g, b)"`, or terminal color names (`"blue"`, `"light-cyan"`, `"reset"`, etc.). Any omitted fields fall back to `eza-dark`:
+
+```toml
+bg = "#10141a"
+fg = "#dce0e8"
+footer_bg = "#161b24"
+footer_fg = "#b4becd"
+border = "#3e4a5c"
+selected_bg = "#2a384e"
+selected_fg = "#ffffff"
+accent = "#61afef"
+muted = "#737d91"
+
+dir_fg = "#61afef"
+symlink_fg = "#56b6c2"
+broken_symlink_fg = "#e06c75"
+exec_fg = "#98c379"
+hidden_fg = "#808a9c"
+file_fg = "#dce0e8"
+
+code_fg = "#e5c07b"
+config_fg = "#c678dd"
+doc_fg = "#61afef"
+archive_fg = "#e06c75"
+media_fg = "#c678dd"
+
+perm_dir = "#61afef"
+perm_read = "#e5c07b"
+perm_write = "#e06c75"
+perm_exec = "#98c379"
+perm_special = "#c678dd"
+perm_none = "#5c6370"
+
+size_number = "#98c379"
+size_unit = "#699b5f"
+
+owner_self = "#e5c07b"
+owner_other = "#d19a66"
+group_fg = "#abb2bf"
+date_fg = "#56b6c2"
+```
 
 ## Themes
 
 Cycle themes anytime with `T` or `c`, or pass `--theme <name>` on launch:
 
-- `eza-dark` (default)
+- `custom` (loaded from `$HOME/.config/lsi/theme.toml` and used as default when present)
+- `eza-dark` (default when no `theme.toml` exists)
 - `catppuccin`
 - `dracula`
 - `nord`

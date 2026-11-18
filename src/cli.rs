@@ -1,16 +1,19 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
+use serde::Deserialize;
 
 use crate::theme::ThemeName;
 
 /// Field used to sort directory entries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SortField {
     #[default]
     Name,
     Size,
     Modified,
+    #[serde(alias = "ext")]
     Extension,
     Type,
 }
@@ -78,64 +81,130 @@ pub struct Args {
     #[arg(long = "no-size", overrides_with = "size")]
     pub no_size: bool,
 
+    /// Show Nerd Font icons (enabled by default unless --no-icons or config disables it)
+    #[arg(long = "icons", overrides_with = "no_icons")]
+    pub icons: bool,
+
     /// Disable Nerd Font icons
-    #[arg(long = "no-icons")]
+    #[arg(long = "no-icons", overrides_with = "icons")]
     pub no_icons: bool,
 
-    /// Initial color theme
-    #[arg(long = "theme", value_enum, default_value_t = ThemeName::EzaDark)]
-    pub theme: ThemeName,
+    /// Show borders around the table and preview panes (enabled by default)
+    #[arg(long = "borders", overrides_with = "no_borders")]
+    pub borders: bool,
 
-    /// Initial sort field
-    #[arg(long = "sort", value_enum, default_value_t = SortField::Name)]
-    pub sort: SortField,
+    /// Hide borders around the table and preview panes
+    #[arg(long = "no-borders", overrides_with = "borders")]
+    pub no_borders: bool,
+
+    /// Show footer status and keybind hint bar (enabled by default)
+    #[arg(long = "footer", overrides_with = "no_footer")]
+    pub footer: bool,
+
+    /// Hide the footer status and keybind hint bar
+    #[arg(long = "no-footer", overrides_with = "footer")]
+    pub no_footer: bool,
+
+    /// Initial color theme (overrides config.toml; defaults to custom if theme.toml exists, else eza-dark)
+    #[arg(long = "theme", value_enum)]
+    pub theme: Option<ThemeName>,
+
+    /// Initial sort field (overrides config.toml; defaults to name)
+    #[arg(long = "sort", value_enum)]
+    pub sort: Option<SortField>,
 
     /// Reverse sort order
     #[arg(short = 'r', long = "reverse")]
     pub reverse: bool,
 
+    /// Group directories before files (enabled by default unless --no-dirs-first or config disables it)
+    #[arg(long = "dirs-first", overrides_with = "no_dirs_first")]
+    pub dirs_first_flag: bool,
+
     /// Do not group directories before files
-    #[arg(long = "no-dirs-first")]
+    #[arg(long = "no-dirs-first", overrides_with = "dirs_first_flag")]
     pub no_dirs_first: bool,
 
     /// Start with the side-by-side preview pane open
     #[arg(long = "preview")]
     pub preview: bool,
 
-    /// Maximum number of inline terminal rows to use (dynamically sizes up to N rows)
-    #[arg(short = 'n', long = "max-rows", visible_alias = "height", default_value_t = 20)]
-    pub max_rows: u16,
+    /// Maximum number of inline terminal rows to use (dynamically sizes up to N rows; default 20)
+    #[arg(short = 'n', long = "max-rows", visible_alias = "height")]
+    pub max_rows: Option<u16>,
+
+    /// Write the final working directory to this file when exiting with 'q' (for shell integration)
+    #[arg(long = "cwd-file", value_name = "PATH")]
+    pub cwd_file: Option<PathBuf>,
 }
 
 impl Args {
-    /// Effective initial state for the permissions column.
+    /// Effective CLI state for the permissions column.
+    #[allow(dead_code)]
     pub const fn show_permissions(&self) -> bool {
         self.long || self.permissions
     }
 
-    /// Effective initial state for the ownership columns.
+    /// Effective CLI state for the ownership columns.
+    #[allow(dead_code)]
     pub const fn show_ownership(&self) -> bool {
         self.long || self.ownership
     }
 
-    /// Effective initial state for the modification timestamp column.
+    /// Effective CLI state for the modification timestamp column.
+    #[allow(dead_code)]
     pub const fn show_time(&self) -> bool {
         self.long || self.time
     }
 
-    /// Effective initial state for the file size column.
+    /// Effective CLI state for the file size column (when explicitly toggled on CLI).
+    #[allow(dead_code)]
     pub const fn show_size(&self) -> bool {
         self.long || !self.no_size
     }
 
-    /// Effective initial state for Nerd Font icons.
-    pub const fn show_icons(&self) -> bool {
-        !self.no_icons
+    /// Explicit CLI override for Nerd Font icons, if provided.
+    pub const fn show_icons_override(&self) -> Option<bool> {
+        if self.no_icons {
+            Some(false)
+        } else if self.icons {
+            Some(true)
+        } else {
+            None
+        }
     }
 
-    /// Effective initial state for grouping directories first.
-    pub const fn dirs_first(&self) -> bool {
-        !self.no_dirs_first
+    /// Explicit CLI override for borders, if provided.
+    pub const fn show_borders_override(&self) -> Option<bool> {
+        if self.no_borders {
+            Some(false)
+        } else if self.borders {
+            Some(true)
+        } else {
+            None
+        }
+    }
+
+    /// Explicit CLI override for footer, if provided.
+    pub const fn show_footer_override(&self) -> Option<bool> {
+        if self.no_footer {
+            Some(false)
+        } else if self.footer {
+            Some(true)
+        } else {
+            None
+        }
+    }
+
+    /// Explicit CLI override for directories-first grouping, if provided.
+    pub const fn dirs_first_override(&self) -> Option<bool> {
+        if self.no_dirs_first {
+            Some(false)
+        } else if self.dirs_first_flag {
+            Some(true)
+        } else {
+            None
+        }
     }
 }
 
@@ -152,13 +221,15 @@ mod tests {
         assert!(!args.show_ownership());
         assert!(!args.show_time());
         assert!(args.show_size());
-        assert!(args.show_icons());
-        assert_eq!(args.theme, ThemeName::EzaDark);
-        assert_eq!(args.sort, SortField::Name);
+        assert_eq!(args.show_icons_override(), None);
+        assert_eq!(args.show_borders_override(), None);
+        assert_eq!(args.show_footer_override(), None);
+        assert_eq!(args.theme, None);
+        assert_eq!(args.sort, None);
         assert!(!args.reverse);
-        assert!(args.dirs_first());
+        assert_eq!(args.dirs_first_override(), None);
         assert!(!args.preview);
-        assert_eq!(args.max_rows, 20);
+        assert_eq!(args.max_rows, None);
     }
 
     #[test]
@@ -176,6 +247,8 @@ mod tests {
             "-r",
             "--no-dirs-first",
             "--no-icons",
+            "--no-borders",
+            "--no-footer",
             "--preview",
             "/tmp",
         ])
@@ -186,11 +259,13 @@ mod tests {
         assert!(args.show_ownership());
         assert!(args.show_time());
         assert!(args.show_size());
-        assert!(!args.show_icons());
-        assert_eq!(args.theme, ThemeName::Catppuccin);
-        assert_eq!(args.sort, SortField::Size);
+        assert_eq!(args.show_icons_override(), Some(false));
+        assert_eq!(args.show_borders_override(), Some(false));
+        assert_eq!(args.show_footer_override(), Some(false));
+        assert_eq!(args.theme, Some(ThemeName::Catppuccin));
+        assert_eq!(args.sort, Some(SortField::Size));
         assert!(args.reverse);
-        assert!(!args.dirs_first());
+        assert_eq!(args.dirs_first_override(), Some(false));
         assert!(args.preview);
         assert_eq!(args.path, Some(PathBuf::from("/tmp")));
     }
@@ -215,12 +290,34 @@ mod tests {
     }
 
     #[test]
-    fn parses_max_rows_flags() {
+    fn parses_max_rows_flags_and_mutually_overriding_toggles() {
         let short_args = Args::try_parse_from(["lsi", "-n", "12"]).expect("-n parses");
-        assert_eq!(short_args.max_rows, 12);
+        assert_eq!(short_args.max_rows, Some(12));
 
         let long_args =
             Args::try_parse_from(["lsi", "--max-rows", "15"]).expect("--max-rows parses");
-        assert_eq!(long_args.max_rows, 15);
+        assert_eq!(long_args.max_rows, Some(15));
+
+        let toggle_args = Args::try_parse_from([
+            "lsi",
+            "--no-borders",
+            "--borders",
+            "--no-footer",
+            "--footer",
+            "--no-icons",
+            "--icons",
+            "--no-dirs-first",
+            "--dirs-first",
+        ])
+        .expect("mutually overriding toggles parse");
+        assert_eq!(toggle_args.show_borders_override(), Some(true));
+        assert_eq!(toggle_args.show_footer_override(), Some(true));
+        assert_eq!(toggle_args.show_icons_override(), Some(true));
+        assert_eq!(toggle_args.dirs_first_override(), Some(true));
+        assert_eq!(toggle_args.cwd_file, None);
+
+        let cwd_args =
+            Args::try_parse_from(["lsi", "--cwd-file", "/tmp/lsi-cwd"]).expect("--cwd-file parses");
+        assert_eq!(cwd_args.cwd_file, Some(PathBuf::from("/tmp/lsi-cwd")));
     }
 }

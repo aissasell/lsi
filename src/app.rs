@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 
 use crate::cli::{Args, SortField};
+use crate::config::{load_user_config, LoadedConfig};
 use crate::fs_entry::{current_uid, read_directory_with_cache, FileEntry, IdentityCache};
 use crate::theme::{Theme, ThemeName};
 
@@ -28,7 +29,7 @@ pub enum InputMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppAction {
     None,
-    Quit,
+    Quit { change_dir: bool },
     OpenEditor(PathBuf),
 }
 
@@ -75,9 +76,12 @@ pub struct App {
     pub show_size: bool,
     pub show_icons: bool,
     pub show_preview: bool,
+    pub show_borders: bool,
+    pub show_footer: bool,
     pub max_rows: u16,
 
     pub theme_name: ThemeName,
+    pub custom_theme: Option<Theme>,
     pub sort_field: SortField,
     pub sort_reverse: bool,
     pub dirs_first: bool,
@@ -94,17 +98,57 @@ pub struct App {
 }
 
 impl App {
-    /// Initializes `App` from parsed CLI arguments.
+    /// Initializes `App` from parsed CLI arguments and user config under `$HOME/.config/lsi`.
     pub fn new(args: Args) -> Result<Self> {
-        let (start_dir, initial_select) = resolve_initial_path(args.path.as_deref())?;
+        Self::new_with_config(args, load_user_config())
+    }
 
-        let show_permissions = args.show_permissions();
-        let show_ownership = args.show_ownership();
-        let show_time = args.show_time();
-        let show_size = args.show_size();
-        let show_icons = args.show_icons();
-        let dirs_first = args.dirs_first();
-        let max_rows = args.max_rows.max(4);
+    /// Initializes `App` by merging `args` over `loaded` config and hard-coded defaults.
+    pub fn new_with_config(args: Args, loaded: LoadedConfig) -> Result<Self> {
+        let (start_dir, initial_select) = resolve_initial_path(args.path.as_deref())?;
+        let cfg = &loaded.config;
+
+        let show_hidden = args.all || cfg.show_hidden.unwrap_or(false);
+        let long = args.long || cfg.long.unwrap_or(false);
+        let show_permissions = long || args.permissions || cfg.show_permissions.unwrap_or(false);
+        let show_ownership = long || args.ownership || cfg.show_ownership.unwrap_or(false);
+        let show_time = long || args.time || cfg.show_time.unwrap_or(false);
+        let show_size = if args.no_size {
+            false
+        } else if args.size || long {
+            true
+        } else {
+            cfg.show_size.unwrap_or(true)
+        };
+        let show_icons = args.show_icons_override().or(cfg.show_icons).unwrap_or(true);
+        let show_preview = args.preview || cfg.show_preview.unwrap_or(false);
+        let show_borders = args
+            .show_borders_override()
+            .or(cfg.show_borders)
+            .unwrap_or(true);
+        let show_footer = args
+            .show_footer_override()
+            .or(cfg.show_footer)
+            .unwrap_or(true);
+        let dirs_first = args.dirs_first_override().or(cfg.dirs_first).unwrap_or(true);
+        let sort_reverse = args.reverse || cfg.reverse.unwrap_or(false);
+        let sort_field = args.sort.or(cfg.sort).unwrap_or(SortField::Name);
+        let max_rows = args.max_rows.or(cfg.max_rows).unwrap_or(20).max(3);
+
+        let mut theme_name = args.theme.or(cfg.theme).unwrap_or(
+            if loaded.custom_theme.is_some() {
+                ThemeName::Custom
+            } else {
+                ThemeName::EzaDark
+            },
+        );
+        let mut status_message = loaded.warning.map(|w| format!("Config warning: {w}"));
+        if theme_name == ThemeName::Custom && loaded.custom_theme.is_none() {
+            theme_name = ThemeName::EzaDark;
+            if status_message.is_none() {
+                status_message = Some("No theme.toml found; falling back to eza-dark".to_string());
+            }
+        }
 
         let mut app = Self {
             current_dir: start_dir,
@@ -114,21 +158,24 @@ impl App {
             back_stack: Vec::new(),
             forward_stack: Vec::new(),
             dir_selection_memory: HashMap::new(),
-            show_hidden: args.all,
+            show_hidden,
             show_permissions,
             show_ownership,
             show_time,
             show_size,
             show_icons,
-            show_preview: args.preview,
+            show_preview,
+            show_borders,
+            show_footer,
             max_rows,
-            theme_name: args.theme,
-            sort_field: args.sort,
-            sort_reverse: args.reverse,
+            theme_name,
+            custom_theme: loaded.custom_theme,
+            sort_field,
+            sort_reverse,
             dirs_first,
             input_mode: InputMode::Normal,
             search_query: String::new(),
-            status_message: None,
+            status_message,
             current_uid: current_uid(),
             identity_cache: IdentityCache::new(),
             preview_path: None,
@@ -140,8 +187,13 @@ impl App {
     }
 
     /// Returns the active color palette.
-    pub const fn theme(&self) -> Theme {
-        self.theme_name.palette()
+    pub fn theme(&self) -> Theme {
+        if self.theme_name == ThemeName::Custom {
+            self.custom_theme
+                .unwrap_or_else(|| ThemeName::EzaDark.palette())
+        } else {
+            self.theme_name.palette()
+        }
     }
 
     /// Returns the currently highlighted `FileEntry`, if any.
@@ -156,11 +208,24 @@ impl App {
             return self.max_rows;
         }
         let entry_rows = u16::try_from(self.visible_entries.len().max(1)).unwrap_or(u16::MAX);
-        let chrome_rows: u16 = if self.max_rows < 6 { 2 } else { 5 };
+        let compact = self.max_rows < 6;
+        let border_rows: u16 = if self.show_borders && !compact { 2 } else { 0 };
+        let footer_rows: u16 = if self.show_footer {
+            if compact {
+                1
+            } else {
+                2
+            }
+        } else if self.input_mode == InputMode::Search {
+            1
+        } else {
+            0
+        };
+        let chrome_rows: u16 = 1_u16 + border_rows + footer_rows;
         chrome_rows
             .saturating_add(entry_rows)
             .min(self.max_rows)
-            .max(3.min(self.max_rows))
+            .max(chrome_rows.saturating_add(1).min(self.max_rows))
     }
 
     /// Reloads entries from `self.current_dir`, optionally selecting `preferred_name`.
@@ -444,8 +509,11 @@ impl App {
 
     fn handle_help_key(&mut self, key: KeyEvent) -> AppAction {
         match key.code {
-            KeyCode::Char('q') => AppAction::Quit,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => AppAction::Quit,
+            KeyCode::Char('q') => AppAction::Quit { change_dir: true },
+            KeyCode::Char('Q') => AppAction::Quit { change_dir: false },
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                AppAction::Quit { change_dir: false }
+            }
             KeyCode::Char('?') | KeyCode::Esc | KeyCode::Enter => {
                 self.input_mode = InputMode::Normal;
                 AppAction::None
@@ -472,7 +540,9 @@ impl App {
                 self.refresh_visible_entries(None);
                 AppAction::None
             }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => AppAction::Quit,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                AppAction::Quit { change_dir: false }
+            }
             KeyCode::Char(ch) => {
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::ALT)
@@ -489,7 +559,7 @@ impl App {
     fn handle_normal_key(&mut self, key: KeyEvent) -> AppAction {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
-                KeyCode::Char('c') => AppAction::Quit,
+                KeyCode::Char('c') => AppAction::Quit { change_dir: false },
                 KeyCode::Char('d') => {
                     self.move_selection(10);
                     AppAction::None
@@ -503,7 +573,8 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') => AppAction::Quit,
+            KeyCode::Char('q') => AppAction::Quit { change_dir: true },
+            KeyCode::Char('Q') => AppAction::Quit { change_dir: false },
 
             // Vertical scrolling
             KeyCode::Char('j') | KeyCode::Down => {
@@ -599,6 +670,22 @@ impl App {
                 self.show_icons = !self.show_icons;
                 AppAction::None
             }
+            KeyCode::Char('B') => {
+                self.show_borders = !self.show_borders;
+                self.status_message = Some(format!(
+                    "Borders: {}",
+                    if self.show_borders { "shown" } else { "hidden" }
+                ));
+                AppAction::None
+            }
+            KeyCode::Char('F') => {
+                self.show_footer = !self.show_footer;
+                self.status_message = Some(format!(
+                    "Footer: {}",
+                    if self.show_footer { "shown" } else { "hidden" }
+                ));
+                AppAction::None
+            }
             KeyCode::Char('L') => {
                 let all_on = self.show_permissions
                     && self.show_ownership
@@ -614,7 +701,7 @@ impl App {
 
             // Themes & sorting
             KeyCode::Char('T') | KeyCode::Char('c') => {
-                self.theme_name = self.theme_name.next();
+                self.theme_name = self.theme_name.next(self.custom_theme.is_some());
                 self.status_message = Some(format!("Theme: {}", self.theme_name.as_str()));
                 AppAction::None
             }
@@ -662,10 +749,10 @@ impl App {
                     self.search_query.clear();
                     self.refresh_visible_entries(None);
                     self.status_message = Some("Filter cleared".to_string());
+                    AppAction::None
                 } else {
-                    self.status_message = None;
+                    AppAction::Quit { change_dir: false }
                 }
-                AppAction::None
             }
             KeyCode::Char('?') => {
                 self.input_mode = InputMode::Help;
@@ -673,6 +760,16 @@ impl App {
             }
             _ => AppAction::None,
         }
+    }
+
+    /// Writes `current_dir` to `cwd_file` when exiting with `change_dir == true`.
+    pub fn write_cwd_file(&self, cwd_file: Option<&Path>, change_dir: bool) -> Result<()> {
+        if change_dir {
+            if let Some(path) = cwd_file {
+                fs::write(path, self.current_dir.to_string_lossy().as_bytes())?;
+            }
+        }
+        Ok(())
     }
 
     /// Recomputes cached preview data if `show_preview` is enabled and target changed or forced.
@@ -877,7 +974,7 @@ mod tests {
     fn app_navigation_history_toggles_and_quit() {
         let root = make_test_tree();
         let args = Args::try_parse_from(["lsi", root.to_str().unwrap()]).unwrap();
-        let mut app = App::new(args).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
 
         // Hidden files hidden by default
         assert!(!app.show_hidden);
@@ -923,7 +1020,7 @@ mod tests {
         // Cycle themes with 'T'
         let initial_theme = app.theme_name;
         app.handle_key(KeyEvent::from(KeyCode::Char('T')));
-        assert_eq!(app.theme_name, initial_theme.next());
+        assert_eq!(app.theme_name, initial_theme.next(false));
 
         // Search filtering
         app.handle_key(KeyEvent::from(KeyCode::Char('/')));
@@ -941,7 +1038,7 @@ mod tests {
         assert_eq!(app.input_mode, InputMode::Help);
         assert_eq!(
             app.handle_key(KeyEvent::from(KeyCode::Char('q'))),
-            AppAction::Quit
+            AppAction::Quit { change_dir: true }
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -952,7 +1049,7 @@ mod tests {
         let root = make_test_tree();
         let file_path = root.join("main.rs");
         let args = Args::try_parse_from(["lsi", file_path.to_str().unwrap()]).unwrap();
-        let app = App::new(args).unwrap();
+        let app = App::new_with_config(args, LoadedConfig::default()).unwrap();
 
         assert_eq!(app.current_dir, fs::canonicalize(&root).unwrap());
         assert_eq!(app.selected_entry().unwrap().name, "main.rs");
@@ -965,8 +1062,23 @@ mod tests {
         let root = make_test_tree();
         // root has 3 non-hidden entries: alpha_dir, beta_dir, main.rs
         let args = Args::try_parse_from(["lsi", "-n", "9", root.to_str().unwrap()]).unwrap();
-        let mut app = App::new(args).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
         assert_eq!(app.visible_entries.len(), 3);
+        assert_eq!(app.desired_inline_height(), 8);
+
+        // Hiding borders drops 2 rows, hiding footer drops 2 more rows
+        app.handle_key(KeyEvent::from(KeyCode::Char('B')));
+        assert!(!app.show_borders);
+        assert_eq!(app.desired_inline_height(), 6);
+        app.handle_key(KeyEvent::from(KeyCode::Char('F')));
+        assert!(!app.show_footer);
+        assert_eq!(app.desired_inline_height(), 4);
+        // Searching when footer is hidden adds 1 row for search prompt
+        app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+        assert_eq!(app.desired_inline_height(), 5);
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        app.handle_key(KeyEvent::from(KeyCode::Char('B')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('F')));
         assert_eq!(app.desired_inline_height(), 8);
 
         // Showing hidden adds .hidden_dir and .env -> 5 entries => 5 + 5 = 10, capped at 9
@@ -986,7 +1098,7 @@ mod tests {
 
         // Small max_rows (< 6) uses compact chrome (2)
         let small_args = Args::try_parse_from(["lsi", "-n", "5", root.to_str().unwrap()]).unwrap();
-        let small_app = App::new(small_args).unwrap();
+        let small_app = App::new_with_config(small_args, LoadedConfig::default()).unwrap();
         assert_eq!(small_app.desired_inline_height(), 5);
 
         let _ = fs::remove_dir_all(&root);
@@ -997,7 +1109,7 @@ mod tests {
         let root = make_test_tree();
         let file_path = fs::canonicalize(root.join("main.rs")).unwrap();
         let args = Args::try_parse_from(["lsi", file_path.to_str().unwrap()]).unwrap();
-        let mut app = App::new(args).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
 
         assert_eq!(app.selected_entry().unwrap().name, "main.rs");
         assert_eq!(
@@ -1008,6 +1120,118 @@ mod tests {
             app.handle_key(KeyEvent::from(KeyCode::Char('l'))),
             AppAction::OpenEditor(file_path)
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn config_precedence_and_custom_theme_default_and_cycle() {
+        use crate::config::ConfigFile;
+        use ratatui::style::Color;
+
+        let root = make_test_tree();
+        let custom = Theme::from_toml_str("accent = \"#123456\"").unwrap();
+        let loaded = LoadedConfig {
+            config: ConfigFile {
+                show_borders: Some(false),
+                show_footer: Some(false),
+                show_hidden: Some(true),
+                show_permissions: Some(true),
+                show_size: Some(false),
+                max_rows: Some(15),
+                ..ConfigFile::default()
+            },
+            custom_theme: Some(custom),
+            warning: None,
+        };
+
+        // Without CLI overrides: config wins and custom theme becomes default
+        let args = Args::try_parse_from(["lsi", root.to_str().unwrap()]).unwrap();
+        let mut app = App::new_with_config(args, loaded.clone()).unwrap();
+        assert!(!app.show_borders);
+        assert!(!app.show_footer);
+        assert!(app.show_hidden);
+        assert!(app.show_permissions);
+        assert!(!app.show_size);
+        assert_eq!(app.max_rows, 15);
+        assert_eq!(app.theme_name, ThemeName::Custom);
+        assert_eq!(app.theme().accent, Color::Rgb(0x12, 0x34, 0x56));
+
+        // Cycling moves through built-in themes and back to Custom
+        app.handle_key(KeyEvent::from(KeyCode::Char('T')));
+        assert_eq!(app.theme_name, ThemeName::EzaDark);
+        for _ in 0..ThemeName::BUILTIN.len() {
+            app.handle_key(KeyEvent::from(KeyCode::Char('T')));
+        }
+        assert_eq!(app.theme_name, ThemeName::Custom);
+
+        // Explicit CLI flags override config.toml and theme.toml default
+        let cli_override = Args::try_parse_from([
+            "lsi",
+            "--borders",
+            "--footer",
+            "--size",
+            "--theme",
+            "nord",
+            "-n",
+            "30",
+            root.to_str().unwrap(),
+        ])
+        .unwrap();
+        let app_cli = App::new_with_config(cli_override, loaded).unwrap();
+        assert!(app_cli.show_borders);
+        assert!(app_cli.show_footer);
+        assert!(app_cli.show_size);
+        assert_eq!(app_cli.theme_name, ThemeName::Nord);
+        assert_eq!(app_cli.max_rows, 30);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn quit_change_dir_and_cwd_file_behavior() {
+        let root = make_test_tree();
+        let cwd_file = root.join("lsi-cwd.txt");
+        let args = Args::try_parse_from(["lsi", root.to_str().unwrap()]).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
+
+        // Enter alpha_dir so current_dir differs from root
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        let alpha_dir = fs::canonicalize(root.join("alpha_dir")).unwrap();
+        assert_eq!(app.current_dir, alpha_dir);
+
+        // 'Q' quits without changing dir and does not write cwd_file
+        assert_eq!(
+            app.handle_key(KeyEvent::from(KeyCode::Char('Q'))),
+            AppAction::Quit { change_dir: false }
+        );
+        app.write_cwd_file(Some(&cwd_file), false).unwrap();
+        assert!(!cwd_file.exists());
+
+        // With locked search filter in Normal mode, first Esc clears filter, second Esc quits (no cd)
+        app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.search_query, "i");
+        assert_eq!(
+            app.handle_key(KeyEvent::from(KeyCode::Esc)),
+            AppAction::None
+        );
+        assert!(app.search_query.is_empty());
+        assert_eq!(
+            app.handle_key(KeyEvent::from(KeyCode::Esc)),
+            AppAction::Quit { change_dir: false }
+        );
+
+        // 'q' quits with change_dir: true and writes current_dir to cwd_file
+        assert_eq!(
+            app.handle_key(KeyEvent::from(KeyCode::Char('q'))),
+            AppAction::Quit { change_dir: true }
+        );
+        app.write_cwd_file(Some(&cwd_file), true).unwrap();
+        let written = fs::read_to_string(&cwd_file).unwrap();
+        assert_eq!(PathBuf::from(written), alpha_dir);
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -15,6 +15,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let theme = app.theme();
     let area = frame.area();
     let compact = area.height < 6;
+    let show_borders = app.show_borders && !compact;
 
     // Paint background across the full frame.
     frame.render_widget(
@@ -22,31 +23,55 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         area,
     );
 
-    let footer_h = if compact { 1 } else { 2 };
-    let root_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(footer_h)])
-        .split(area);
+    let footer_h = if app.show_footer {
+        if compact {
+            1
+        } else {
+            2
+        }
+    } else if app.input_mode == InputMode::Search {
+        1
+    } else {
+        0
+    };
+
+    let (body_area, footer_area) = if footer_h > 0 {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(footer_h)])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
 
     if app.show_preview && area.width >= 60 {
         let body_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(root_chunks[0]);
-        render_table(frame, app, &theme, body_chunks[0], compact);
-        render_preview(frame, app, &theme, body_chunks[1], compact);
+            .split(body_area);
+        render_table(frame, app, &theme, body_chunks[0], show_borders);
+        render_preview(frame, app, &theme, body_chunks[1], show_borders);
     } else {
-        render_table(frame, app, &theme, root_chunks[0], compact);
+        render_table(frame, app, &theme, body_area, show_borders);
     }
 
-    render_footer(frame, app, &theme, root_chunks[1], compact);
+    if let Some(footer_rect) = footer_area {
+        render_footer(frame, app, &theme, footer_rect, footer_h == 1);
+    }
 
     if app.input_mode == InputMode::Help {
         render_help_modal(frame, &theme, area);
     }
 }
 
-fn render_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, compact: bool) {
+fn render_table(
+    frame: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    show_borders: bool,
+) {
     let mut header_cells = Vec::new();
     let mut widths = Vec::new();
 
@@ -121,7 +146,7 @@ fn render_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, com
         ""
     };
 
-    if compact && app.visible_entries.is_empty() {
+    if !show_borders && app.visible_entries.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
             empty_hint,
             Style::default().fg(theme.muted),
@@ -131,15 +156,15 @@ fn render_table(frame: &mut Frame, app: &mut App, theme: &Theme, area: Rect, com
         return;
     }
 
-    let block = if compact {
-        Block::default().style(Style::default().bg(theme.bg).fg(theme.fg))
-    } else {
+    let block = if show_borders {
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.border))
             .title(empty_hint)
             .style(Style::default().bg(theme.bg).fg(theme.fg))
+    } else {
+        Block::default().style(Style::default().bg(theme.bg).fg(theme.fg))
     };
 
     let table = Table::new(rows, widths)
@@ -291,23 +316,29 @@ fn category_color(
     }
 }
 
-fn render_preview(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compact: bool) {
+fn render_preview(
+    frame: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    show_borders: bool,
+) {
     let title = match app.selected_entry() {
         Some(entry) => format!(" Preview: {} ", entry.name),
         None => " Preview ".to_string(),
     };
 
-    let block = if compact {
+    let block = if show_borders {
         Block::default()
             .title(title)
-            .borders(Borders::LEFT)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.border))
             .style(Style::default().bg(theme.bg).fg(theme.fg))
     } else {
         Block::default()
             .title(title)
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .borders(Borders::LEFT)
             .border_style(Style::default().fg(theme.border))
             .style(Style::default().bg(theme.bg).fg(theme.fg))
     };
@@ -454,7 +485,7 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
 
         if compact {
             spans.push(Span::styled(
-                "   q:Quit  ?:Help",
+                "   q:Quit(cd)  Q/Esc:Quit  ?:Help",
                 Style::default().fg(theme.muted),
             ));
         }
@@ -479,7 +510,7 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
     frame.render_widget(status_widget, rows[0]);
 
     let hints = Paragraph::new(Line::from(Span::styled(
-        " q:Quit  hjkl/Arrows:Nav  -/+:History  .:Hidden  p:Perm  o:Owner  t:Time  T:Theme  v:Preview  /:Filter  ?:Help",
+        " q:Quit(cd)  Q/Esc:Quit  hjkl/Arrows:Nav  -/+:History  .:Hidden  p:Perm  o:Owner  t:Time  T:Theme  v:Preview  /:Filter  ?:Help",
         Style::default().fg(theme.muted),
     )))
     .style(Style::default().bg(theme.footer_bg));
@@ -513,11 +544,14 @@ fn render_help_modal(frame: &mut Frame, theme: &Theme, area: Rect) {
             "Toggle perms / owner / time / size / icons",
         ),
         ("L", "Toggle all long metadata columns"),
+        ("B / F", "Toggle borders / footer"),
         ("T / c", "Cycle color themes"),
         ("s / r / d", "Cycle sort / reverse / dirs-first"),
         ("v / Tab", "Toggle preview pane"),
         ("/   and   Esc", "Filter entries / clear filter"),
-        ("?   and   q", "Toggle help / exit lsi"),
+        ("q", "Quit and cd (writes --cwd-file)"),
+        ("Q / Esc", "Quit without changing directory"),
+        ("?", "Toggle help modal"),
     ];
 
     let lines: Vec<Line> = keybinds
@@ -558,6 +592,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::cli::Args;
+    use crate::config::LoadedConfig;
     use clap::Parser;
     use crossterm::event::{KeyCode, KeyEvent};
     use ratatui::backend::TestBackend;
@@ -585,7 +620,7 @@ mod tests {
             base.to_str().unwrap(),
         ])
         .unwrap();
-        let mut app = App::new(args).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
 
         let backend = TestBackend::new(120, 35);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -618,7 +653,7 @@ mod tests {
 
         // Standard inline viewport (height >= 6) anchored at non-zero cursor row y = 5
         let args = Args::try_parse_from(["lsi", "-n", "12", base.to_str().unwrap()]).unwrap();
-        let mut app = App::new(args).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
         let height = app.desired_inline_height();
         assert_eq!(height, 7);
 
@@ -641,7 +676,7 @@ mod tests {
         // Compact inline viewport (height < 6) anchored at non-zero cursor row y = 4
         let compact_args =
             Args::try_parse_from(["lsi", "-n", "5", base.to_str().unwrap()]).unwrap();
-        let mut compact_app = App::new(compact_args).unwrap();
+        let mut compact_app = App::new_with_config(compact_args, LoadedConfig::default()).unwrap();
         let compact_h = compact_app.desired_inline_height();
         assert_eq!(compact_h, 4);
 
@@ -664,6 +699,38 @@ mod tests {
         let compact_out = buffer_to_string(&compact_terminal);
         assert!(compact_out.contains("Cargo.toml"));
         assert!(compact_out.contains("?:Help"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn renders_without_borders_and_without_footer() {
+        let base = std::env::temp_dir().join(format!("lsi_noborder_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("src")).unwrap();
+        fs::write(base.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+
+        let args = Args::try_parse_from([
+            "lsi",
+            "--no-borders",
+            "--no-footer",
+            base.to_str().unwrap(),
+        ])
+        .unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
+        assert!(!app.show_borders);
+        assert!(!app.show_footer);
+        assert_eq!(app.desired_inline_height(), 3);
+
+        let backend = TestBackend::new(80, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let out = buffer_to_string(&terminal);
+        assert!(out.contains("Cargo.toml"));
+        assert!(out.contains("src"));
+        assert!(!out.contains('╭'));
+        assert!(!out.contains('╰'));
+        assert!(!out.contains("?:Help"));
 
         let _ = fs::remove_dir_all(&base);
     }
