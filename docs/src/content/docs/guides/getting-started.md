@@ -5,7 +5,7 @@ description: Install lsi, configure a Nerd Font, and launch your first interacti
 
 `lsi` is an interactive `eza`-inspired terminal file explorer written in Rust. Unlike `ls` or `eza` (which print static text and exit) or fullscreen file managers (which take over your entire terminal window), `lsi` renders an interactive table **inline directly below your shell prompt**.
 
-When you exit, your terminal scrollback remains intact—and with [Shell Integration](/guides/shell-integration/) you can change your shell's working directory to the folder you browsed to.
+When you exit, your terminal scrollback remains intact—and with [Shell Integration](/lsi/guides/shell-integration/) you can change your shell's working directory to the folder you browsed to.
 
 ## Prerequisites
 
@@ -56,6 +56,6 @@ Passing a file path (for example `lsi src/main.rs`) opens `lsi` in that file's p
 
 ## Next Steps
 
-- Learn tree navigation, history, previews, and toggles in [Navigation & Usage](/guides/usage/).
-- Set up `cd` on exit in [Shell Integration](/guides/shell-integration/).
-- Customize defaults and colors in [Configuration (`config.toml`)](/reference/configuration/) and [Themes & Custom Palette](/guides/themes/).
+- Learn tree navigation, history, previews, and toggles in [Navigation & Usage](/lsi/guides/usage/).
+- Set up `cd` on exit in [Shell Integration](/lsi/guides/shell-integration/).
+- Customize defaults and colors in [Configuration (`config.toml`)](/lsi/reference/configuration/) and [Themes & Custom Palette](/lsi/guides/themes/).

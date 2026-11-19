@@ -60,4 +60,4 @@ dir_fg = "#89b4fa"
 exec_fg = "#a6e3a1"
 ```
 
-See [Theme Reference (`theme.toml`)](/reference/theme-toml/) for the complete list of all 32 color keys.
+See [Theme Reference (`theme.toml`)](/lsi/reference/theme-toml/) for the complete list of all 32 color keys.

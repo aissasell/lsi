@@ -9,7 +9,7 @@ hero:
     alt: lsi terminal prompt and inline table logo
   actions:
     - text: Get Started
-      link: /guides/getting-started/
+      link: /lsi/guides/getting-started/
       icon: right-arrow
     - text: GitHub
       link: https://github.com/aissasell/lsi
@@ -22,22 +22,22 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 ## Why `lsi`?
 
 <CardGrid stagger>
-	<Card title="Inline Viewport & Dynamic Height" icon="laptop">
-		Renders directly beneath your shell prompt using Ratatui's inline viewport, scaling dynamically with directory entries up to <code>--max-rows</code> (<code>-n</code>).
-	</Card>
-	<Card title="eza-Inspired Columns & Nerd Fonts" icon="list-format">
-		Displays per-character colorized permissions, human-readable sizes, owner/group names, modification timestamps, and Nerd Font glyphs for folders and file extensions.
-	</Card>
-	<Card title="In-Terminal $EDITOR Integration" icon="pencil">
-		Press <code>Enter</code>, <code>l</code>, or <code>e</code> on a text file to edit it right in your current terminal via <code>$VISUAL</code> / <code>$EDITOR</code> (such as Neovim), or use <code>O</code> for the system opener.
-	</Card>
-	<Card title="Shell Integration (cd on Exit)" icon="rocket">
-		Use <code>--cwd-file</code> with a Fish, Bash, or Zsh wrapper: press <code>q</code> to exit and <code>cd</code> into the browsed directory, or <code>Q</code> / <code>Esc</code> to exit without changing directories.
-	</Card>
-	<Card title="Live Preview & Filtering" icon="magnifier">
-		Toggle a side-by-side preview pane with <code>v</code> or <code>Tab</code>, and filter entries in real time with <code>/</code>.
-	</Card>
-	<Card title="TOML Configuration & Themes" icon="setting">
-		Customize defaults in <code>~/.config/lsi/config.toml</code> and define a custom palette in <code>~/.config/lsi/theme.toml</code> alongside 7 built-in themes.
-	</Card>
+ <Card title="Inline Viewport & Dynamic Height" icon="laptop">
+  Renders directly beneath your shell prompt, scaling dynamically with directory entries up to <code>--max-rows</code> (<code>-n</code>).
+ </Card>
+ <Card title="eza-Inspired Columns & Nerd Fonts" icon="list-format">
+  Displays per-character colorized permissions, human-readable sizes, owner/group names, modification timestamps, and Nerd Font glyphs for folders and file extensions.
+ </Card>
+ <Card title="In-Terminal $EDITOR Integration" icon="pencil">
+  Press <code>Enter</code>, <code>l</code>, or <code>e</code> on a text file to edit it right in your current terminal via <code>$VISUAL</code> / <code>$EDITOR</code> (such as Neovim), or use <code>O</code> for the system opener.
+ </Card>
+ <Card title="Shell Integration (cd on Exit)" icon="rocket">
+  Use <code>--cwd-file</code> with a Fish, Bash, or Zsh wrapper: press <code>q</code> to exit and <code>cd</code> into the browsed directory, or <code>Q</code> / <code>Esc</code> to exit without changing directories.
+ </Card>
+ <Card title="Live Preview & Filtering" icon="magnifier">
+  Toggle a side-by-side preview pane with <code>v</code> or <code>Tab</code>, and filter entries in real time with <code>/</code>.
+ </Card>
+ <Card title="TOML Configuration & Themes" icon="setting">
+  Customize defaults in <code>~/.config/lsi/config.toml</code> and define a custom palette in <code>~/.config/lsi/theme.toml</code> alongside 7 built-in themes.
+ </Card>
 </CardGrid>
