@@ -1,4 +1,7 @@
-# `lsi` — Interactive `eza`-style Terminal File Explorer
+<div align="center">
+  <img src="assets/logo.svg" alt="lsi logo" width="96" />
+  <h1><code>lsi</code> — Interactive <code>eza</code>-style Terminal File Explorer</h1>
+</div>
 
 `lsi` is an interactive directory listing tool written in Rust with `ratatui` and `crossterm`. Inspired by `eza`, it renders directory contents inline directly below your shell prompt while letting you scroll, preview files, navigate back and forth through the folder tree and history, toggle metadata columns, switch color themes, and open files right in your terminal editor.
 

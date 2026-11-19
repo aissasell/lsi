@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <rect x="6" y="6" width="116" height="116" rx="24" fill="#10141a" stroke="#3e4a5c" stroke-width="4" />
+
+  <!-- Terminal prompt > -->
+  <path d="M 24 28 L 40 41 L 24 54" stroke="#61afef" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+
+  <!-- Small square table close to > -->
+  <rect x="47" y="48" width="57" height="52" rx="9" fill="#161b24" stroke="#50627c" stroke-width="3.5" />
+
+  <!-- Highlighted first row -->
+  <rect x="53" y="55" width="45" height="11" rx="3.5" fill="#2a384e" />
+  <rect x="56" y="58" width="8" height="5" rx="2.5" fill="#61afef" />
+  <rect x="68" y="58" width="26" height="5" rx="2.5" fill="#ffffff" />
+
+  <!-- Second row -->
+  <rect x="56" y="71.5" width="8" height="5" rx="2.5" fill="#e5c07b" />
+  <rect x="68" y="71.5" width="21" height="5" rx="2.5" fill="#98c379" />
+
+  <!-- Third row -->
+  <rect x="56" y="85" width="8" height="5" rx="2.5" fill="#c678dd" />
+  <rect x="68" y="85" width="28" height="5" rx="2.5" fill="#56b6c2" />
+</svg>

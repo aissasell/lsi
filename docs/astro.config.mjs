@@ -8,6 +8,10 @@ export default defineConfig({
 		starlight({
 			title: 'lsi',
 			description: 'Interactive eza-like terminal file explorer with Nerd Fonts and themes',
+			logo: {
+				src: './src/assets/logo.svg',
+				alt: 'lsi logo',
+			},
 			social: [
 				{
 					icon: 'github',
