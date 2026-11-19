@@ -5,7 +5,7 @@ description: Release history and notable changes for lsi.
 
 All notable changes to `lsi` are documented on this page.
 
-## [Unreleased]
+## [1.0.0] — 2026-11-19
 
 ### Added
 
