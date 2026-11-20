@@ -58,4 +58,4 @@ Passing a file path (for example `lsi src/main.rs`) opens `lsi` in that file's p
 
 - Learn tree navigation, history, previews, and toggles in [Navigation & Usage](/lsi/guides/usage/).
 - Set up `cd` on exit in [Shell Integration](/lsi/guides/shell-integration/).
-- Customize defaults and colors in [Configuration (`config.toml`)](/lsi/reference/configuration/) and [Themes & Custom Palette](/lsi/guides/themes/).
+- Customize defaults, shortcuts, and colors in [Configuration (`config.toml`)](/lsi/reference/configuration/), [Keybindings (`keybinds.toml`)](/lsi/reference/keybindings/), and [Themes & Custom Palette](/lsi/guides/themes/).

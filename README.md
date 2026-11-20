@@ -15,10 +15,11 @@
   - Modification date & time (`YYYY-MM-DD HH:MM`)
 - **Nerd Font Icons**: Distinct glyphs and semantic colors for special directories (`.git`, `.github`, `src`, `node_modules`, `target`, `docs`, etc.), exact filenames (`Cargo.toml`, `Dockerfile`, `Makefile`, `README.md`, `.env`, etc.), and file extensions.
 - **Interactive Tree & History Navigation**: Step into folders, climb up to parent directories (keeping the exited folder selected), and move back/forward through your navigation history.
+- **File Manipulation, Creation & Renaming**: Multi-select with `Space`, copy (`y`), cut (`x`), paste (`p`), Trash (`Delete`) or permanently delete (`Shift+Delete`), create new files/folders (`a`, ending with `/` for directories), and rename inline with full name & extension editing (`r`).
 - **In-Terminal Editor Integration**: Pressing `Enter` or `l` on a text file suspends the inline UI and opens it directly in `$VISUAL` / `$EDITOR` (e.g., `nvim`) inside the current terminal, returning smoothly when you exit. Binary/media files open via the system opener (or press `O` explicitly).
 - **Side-by-Side Preview Pane**: Toggle a live preview pane (`v` or `Tab`) for text files and directory contents.
 - **Live Search & Sorting**: Filter entries in real time with `/`, and sort by name, size, modified time, extension, or type.
-- **Built-in Color Themes**: Switch between 7 color themes on the fly.
+- **Customizable Color Themes & Keybindings**: Switch between 7 built-in color themes or named custom themes in `$HOME/.config/lsi/themes/<name>.toml`, and remap or unbind every keyboard action in `$HOME/.config/lsi/keybinds.toml`.
 
 ## Prerequisites
 
