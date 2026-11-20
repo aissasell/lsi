@@ -4,6 +4,7 @@ mod config;
 mod fs_entry;
 mod fs_ops;
 mod icons;
+mod keybinds;
 mod theme;
 mod ui;
 

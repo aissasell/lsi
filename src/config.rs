@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::cli::SortField;
+use crate::keybinds::Keybinds;
 use crate::theme::{Theme, ThemeName};
 
 /// User configuration loaded from `$HOME/.config/lsi/config.toml`.
@@ -39,11 +40,12 @@ pub struct ConfigFile {
     pub max_rows: Option<u16>,
 }
 
-/// Combined result of loading `config.toml` and `theme.toml`.
+/// Combined result of loading `config.toml`, `theme.toml`, and `keybinds.toml`.
 #[derive(Debug, Default, Clone)]
 pub struct LoadedConfig {
     pub config: ConfigFile,
     pub custom_theme: Option<Theme>,
+    pub keybinds: Keybinds,
     pub warning: Option<String>,
 }
 
@@ -94,6 +96,25 @@ pub fn load_from_dir(dir: &Path) -> LoadedConfig {
         None
     };
 
+    let keybinds_path = dir.join("keybinds.toml");
+    let keybinds = if keybinds_path.is_file() {
+        match fs::read_to_string(&keybinds_path) {
+            Ok(raw) => match Keybinds::from_toml_str(&raw) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    warnings.push(format!("keybinds.toml: {err}"));
+                    Keybinds::default()
+                }
+            },
+            Err(err) => {
+                warnings.push(format!("keybinds.toml: {err}"));
+                Keybinds::default()
+            }
+        }
+    } else {
+        Keybinds::default()
+    };
+
     let warning = if warnings.is_empty() {
         None
     } else {
@@ -103,6 +124,7 @@ pub fn load_from_dir(dir: &Path) -> LoadedConfig {
     LoadedConfig {
         config,
         custom_theme,
+        keybinds,
         warning,
     }
 }
@@ -168,6 +190,15 @@ dir_fg = [100, 150, 200]
         )
         .unwrap();
 
+        fs::write(
+            dir.join("keybinds.toml"),
+            r#"
+rename_item = "F2"
+quit_cd = ["q", "Ctrl+w"]
+"#,
+        )
+        .unwrap();
+
         let loaded = load_from_dir(&dir);
         assert!(loaded.warning.is_none());
         assert_eq!(loaded.config.show_borders, Some(false));
@@ -190,6 +221,18 @@ dir_fg = [100, 150, 200]
         assert_eq!(custom.accent, Color::Rgb(0xff, 0x99, 0x00));
         assert_eq!(custom.dir_fg, Color::Rgb(100, 150, 200));
 
+        assert_eq!(
+            loaded.keybinds.rename_item,
+            vec![crate::keybinds::KeyCombo::parse("F2").unwrap()]
+        );
+        assert_eq!(
+            loaded.keybinds.quit_cd,
+            vec![
+                crate::keybinds::KeyCombo::parse("q").unwrap(),
+                crate::keybinds::KeyCombo::parse("Ctrl+w").unwrap()
+            ]
+        );
+
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -198,12 +241,15 @@ dir_fg = [100, 150, 200]
         let dir = make_temp_config_dir("invalid");
         fs::write(dir.join("config.toml"), "show_borders = [not a bool").unwrap();
         fs::write(dir.join("theme.toml"), "bg = \"not-a-color\"").unwrap();
+        fs::write(dir.join("keybinds.toml"), "rename_item = \"NotAKey\"").unwrap();
 
         let loaded = load_from_dir(&dir);
         let warning = loaded.warning.expect("warning recorded");
         assert!(warning.contains("config.toml"));
         assert!(warning.contains("theme.toml"));
+        assert!(warning.contains("keybinds.toml"));
         assert!(loaded.custom_theme.is_none());
+        assert_eq!(loaded.keybinds, Keybinds::default());
 
         let _ = fs::remove_dir_all(&dir);
     }

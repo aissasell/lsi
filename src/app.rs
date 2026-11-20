@@ -12,6 +12,7 @@ use crate::cli::{Args, SortField};
 use crate::config::{load_user_config, LoadedConfig};
 use crate::fs_entry::{current_uid, read_directory_with_cache, FileEntry, IdentityCache};
 use crate::fs_ops;
+use crate::keybinds::{Keybinds, NormalAction};
 use crate::theme::{Theme, ThemeName};
 
 const PREVIEW_MAX_LINES: usize = 100;
@@ -107,6 +108,7 @@ pub struct App {
 
     pub theme_name: ThemeName,
     pub custom_theme: Option<Theme>,
+    pub keybinds: Keybinds,
     pub sort_field: SortField,
     pub sort_reverse: bool,
     pub dirs_first: bool,
@@ -204,6 +206,7 @@ impl App {
             max_rows,
             theme_name,
             custom_theme: loaded.custom_theme,
+            keybinds: loaded.keybinds,
             sort_field,
             sort_reverse,
             dirs_first,
@@ -559,68 +562,70 @@ impl App {
     }
 
     fn handle_confirm_delete_key(&mut self, key: KeyEvent) -> AppAction {
-        match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                AppAction::Quit { change_dir: false }
-            }
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                self.execute_permanent_delete();
-                self.input_mode = InputMode::Normal;
-                AppAction::None
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
-                self.pending_delete.clear();
-                self.input_mode = InputMode::Normal;
-                self.status_message = Some("Delete cancelled".to_string());
-                AppAction::None
-            }
-            _ => AppAction::None,
+        if self.keybinds.matches_force_quit(key) {
+            return AppAction::Quit { change_dir: false };
         }
+        if Keybinds::matches(&self.keybinds.confirm_delete, key) {
+            self.execute_permanent_delete();
+            self.input_mode = InputMode::Normal;
+            return AppAction::None;
+        }
+        if Keybinds::matches(&self.keybinds.cancel_delete, key) {
+            self.pending_delete.clear();
+            self.input_mode = InputMode::Normal;
+            self.status_message = Some("Delete cancelled".to_string());
+            return AppAction::None;
+        }
+        AppAction::None
     }
 
     fn handle_help_key(&mut self, key: KeyEvent) -> AppAction {
-        match key.code {
-            KeyCode::Char('q') => AppAction::Quit { change_dir: true },
-            KeyCode::Char('Q') => AppAction::Quit { change_dir: false },
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                AppAction::Quit { change_dir: false }
-            }
-            KeyCode::Char('?') | KeyCode::Esc | KeyCode::Enter => {
-                self.input_mode = InputMode::Normal;
-                AppAction::None
-            }
-            _ => AppAction::None,
+        if self.keybinds.matches_force_quit(key) {
+            return AppAction::Quit { change_dir: false };
         }
+        if Keybinds::matches(&self.keybinds.toggle_help, key)
+            || Keybinds::matches(&self.keybinds.close_help, key)
+        {
+            self.input_mode = InputMode::Normal;
+            return AppAction::None;
+        }
+        if Keybinds::matches(&self.keybinds.quit_cd, key) {
+            return AppAction::Quit { change_dir: true };
+        }
+        if Keybinds::matches(&self.keybinds.quit, key) {
+            return AppAction::Quit { change_dir: false };
+        }
+        AppAction::None
     }
 
     fn handle_search_key(&mut self, key: KeyEvent) -> AppAction {
+        if self.keybinds.matches_force_quit(key) {
+            return AppAction::Quit { change_dir: false };
+        }
+        if Keybinds::matches(&self.keybinds.search_cancel, key) {
+            self.search_query.clear();
+            self.input_mode = InputMode::Normal;
+            self.refresh_visible_entries(None);
+            self.status_message = Some("Filter cleared".to_string());
+            return AppAction::None;
+        }
+        if Keybinds::matches(&self.keybinds.search_confirm, key) {
+            self.input_mode = InputMode::Normal;
+            return AppAction::None;
+        }
         match key.code {
-            KeyCode::Esc => {
-                self.search_query.clear();
-                self.input_mode = InputMode::Normal;
-                self.refresh_visible_entries(None);
-                self.status_message = Some("Filter cleared".to_string());
-                AppAction::None
-            }
-            KeyCode::Enter => {
-                self.input_mode = InputMode::Normal;
-                AppAction::None
-            }
             KeyCode::Backspace => {
                 self.search_query.pop();
                 self.refresh_visible_entries(None);
                 AppAction::None
             }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                AppAction::Quit { change_dir: false }
-            }
-            KeyCode::Char(ch) => {
-                if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !key.modifiers.contains(KeyModifiers::ALT)
-                {
-                    self.search_query.push(ch);
-                    self.refresh_visible_entries(None);
-                }
+            KeyCode::Char(ch)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.search_query.push(ch);
+                self.refresh_visible_entries(None);
                 AppAction::None
             }
             _ => AppAction::None,
@@ -628,76 +633,61 @@ impl App {
     }
 
     fn handle_normal_key(&mut self, key: KeyEvent) -> AppAction {
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            return match key.code {
-                KeyCode::Char('c') => AppAction::Quit { change_dir: false },
-                KeyCode::Char('d') => {
-                    self.move_selection(10);
-                    AppAction::None
-                }
-                KeyCode::Char('u') => {
-                    self.move_selection(-10);
-                    AppAction::None
-                }
-                KeyCode::Char('r') => {
-                    self.refresh_directory();
-                    AppAction::None
-                }
-                _ => AppAction::None,
-            };
-        }
+        let Some(action) = self.keybinds.resolve_normal(key) else {
+            return AppAction::None;
+        };
 
-        match key.code {
-            KeyCode::Char('q') => AppAction::Quit { change_dir: true },
-            KeyCode::Char('Q') => AppAction::Quit { change_dir: false },
+        match action {
+            NormalAction::QuitCd => AppAction::Quit { change_dir: true },
+            NormalAction::Quit => AppAction::Quit { change_dir: false },
 
             // Vertical scrolling
-            KeyCode::Char('j') | KeyCode::Down => {
+            NormalAction::MoveDown => {
                 self.move_selection(1);
                 AppAction::None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            NormalAction::MoveUp => {
                 self.move_selection(-1);
                 AppAction::None
             }
-            KeyCode::PageDown => {
+            NormalAction::PageDown => {
                 self.move_selection(10);
                 AppAction::None
             }
-            KeyCode::PageUp => {
+            NormalAction::PageUp => {
                 self.move_selection(-10);
                 AppAction::None
             }
-            KeyCode::Char('g') | KeyCode::Home => {
+            NormalAction::JumpTop => {
                 self.select_first();
                 AppAction::None
             }
-            KeyCode::Char('G') | KeyCode::End => {
+            NormalAction::JumpBottom => {
                 self.select_last();
                 AppAction::None
             }
 
             // Tree navigation & opening
-            KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
+            NormalAction::GoParent => {
                 self.go_parent();
                 AppAction::None
             }
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.open_selected(false),
-            KeyCode::Char('O') => self.open_selected(true),
-            KeyCode::Char('e') => self.open_in_editor(),
+            NormalAction::Open => self.open_selected(false),
+            NormalAction::OpenSystem => self.open_selected(true),
+            NormalAction::OpenEditor => self.open_in_editor(),
 
             // Back / forward history
-            KeyCode::Char('-') | KeyCode::Char('[') | KeyCode::Char('b') => {
+            NormalAction::HistoryBack => {
                 self.go_back();
                 AppAction::None
             }
-            KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char(']') | KeyCode::Char('w') => {
+            NormalAction::HistoryForward => {
                 self.go_forward();
                 AppAction::None
             }
 
             // Home jump & reload
-            KeyCode::Char('~') => {
+            NormalAction::JumpHome => {
                 if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
                     if home.is_dir() {
                         let remembered = self.dir_selection_memory.get(&home).cloned();
@@ -706,13 +696,13 @@ impl App {
                 }
                 AppAction::None
             }
-            KeyCode::F(5) => {
+            NormalAction::Refresh => {
                 self.refresh_directory();
                 AppAction::None
             }
 
             // Column & view toggles
-            KeyCode::Char('.') => {
+            NormalAction::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
                 self.refresh_visible_entries(None);
                 self.status_message = Some(format!(
@@ -721,36 +711,36 @@ impl App {
                 ));
                 AppAction::None
             }
-            KeyCode::Char('a') => {
+            NormalAction::CreateItem => {
                 self.create_input.clear();
                 self.input_mode = InputMode::CreateItem;
                 AppAction::None
             }
-            KeyCode::Char('r') => {
+            NormalAction::RenameItem => {
                 self.start_rename();
                 AppAction::None
             }
-            KeyCode::Char('P') => {
+            NormalAction::TogglePermissions => {
                 self.show_permissions = !self.show_permissions;
                 AppAction::None
             }
-            KeyCode::Char('o') | KeyCode::Char('u') => {
+            NormalAction::ToggleOwnership => {
                 self.show_ownership = !self.show_ownership;
                 AppAction::None
             }
-            KeyCode::Char('t') => {
+            NormalAction::ToggleTime => {
                 self.show_time = !self.show_time;
                 AppAction::None
             }
-            KeyCode::Char('S') => {
+            NormalAction::ToggleSize => {
                 self.show_size = !self.show_size;
                 AppAction::None
             }
-            KeyCode::Char('i') => {
+            NormalAction::ToggleIcons => {
                 self.show_icons = !self.show_icons;
                 AppAction::None
             }
-            KeyCode::Char('B') => {
+            NormalAction::ToggleBorders => {
                 self.show_borders = !self.show_borders;
                 self.status_message = Some(format!(
                     "Borders: {}",
@@ -758,7 +748,7 @@ impl App {
                 ));
                 AppAction::None
             }
-            KeyCode::Char('F') => {
+            NormalAction::ToggleFooter => {
                 self.show_footer = !self.show_footer;
                 self.status_message = Some(format!(
                     "Footer: {}",
@@ -766,7 +756,7 @@ impl App {
                 ));
                 AppAction::None
             }
-            KeyCode::Char('L') => {
+            NormalAction::ToggleLong => {
                 let all_on = self.show_permissions
                     && self.show_ownership
                     && self.show_time
@@ -780,44 +770,44 @@ impl App {
             }
 
             // Selection & file operations
-            KeyCode::Char(' ') => {
+            NormalAction::ToggleSelect => {
                 self.toggle_select_current();
                 AppAction::None
             }
-            KeyCode::Char('y') => {
+            NormalAction::Yank => {
                 self.yank_or_cut(ClipboardMode::Copy);
                 AppAction::None
             }
-            KeyCode::Char('x') => {
+            NormalAction::Cut => {
                 self.yank_or_cut(ClipboardMode::Cut);
                 AppAction::None
             }
-            KeyCode::Char('p') => {
+            NormalAction::Paste => {
                 self.paste_clipboard();
                 AppAction::None
             }
-            KeyCode::Delete => {
-                if key.modifiers.contains(KeyModifiers::SHIFT) {
-                    self.request_permanent_delete();
-                } else {
-                    self.trash_selected();
-                }
+            NormalAction::Trash => {
+                self.trash_selected();
+                AppAction::None
+            }
+            NormalAction::PermanentDelete => {
+                self.request_permanent_delete();
                 AppAction::None
             }
 
             // Themes & sorting
-            KeyCode::Char('T') | KeyCode::Char('c') => {
+            NormalAction::CycleTheme => {
                 self.theme_name = self.theme_name.next(self.custom_theme.is_some());
                 self.status_message = Some(format!("Theme: {}", self.theme_name.as_str()));
                 AppAction::None
             }
-            KeyCode::Char('s') => {
+            NormalAction::CycleSort => {
                 self.sort_field = self.sort_field.next();
                 self.refresh_visible_entries(None);
                 self.status_message = Some(format!("Sort: {}", self.sort_field.as_str()));
                 AppAction::None
             }
-            KeyCode::Char('R') => {
+            NormalAction::ToggleReverseSort => {
                 self.sort_reverse = !self.sort_reverse;
                 self.refresh_visible_entries(None);
                 self.status_message = Some(format!(
@@ -830,7 +820,7 @@ impl App {
                 ));
                 AppAction::None
             }
-            KeyCode::Char('d') => {
+            NormalAction::ToggleDirsFirst => {
                 self.dirs_first = !self.dirs_first;
                 self.refresh_visible_entries(None);
                 self.status_message = Some(format!(
@@ -841,16 +831,16 @@ impl App {
             }
 
             // Preview, search, help
-            KeyCode::Char('v') | KeyCode::Tab => {
+            NormalAction::TogglePreview => {
                 self.show_preview = !self.show_preview;
                 self.update_preview(true);
                 AppAction::None
             }
-            KeyCode::Char('/') => {
+            NormalAction::Search => {
                 self.input_mode = InputMode::Search;
                 AppAction::None
             }
-            KeyCode::Esc => {
+            NormalAction::Cancel => {
                 if !self.selected_paths.is_empty() {
                     self.selected_paths.clear();
                     self.status_message = Some("Selection cleared".to_string());
@@ -864,11 +854,10 @@ impl App {
                     AppAction::Quit { change_dir: false }
                 }
             }
-            KeyCode::Char('?') => {
+            NormalAction::ToggleHelp => {
                 self.input_mode = InputMode::Help;
                 AppAction::None
             }
-            _ => AppAction::None,
         }
     }
 
@@ -1077,19 +1066,22 @@ impl App {
     }
 
     fn handle_create_item_key(&mut self, key: KeyEvent) -> AppAction {
+        if self.keybinds.matches_force_quit(key) {
+            return AppAction::Quit { change_dir: false };
+        }
+        if Keybinds::matches(&self.keybinds.create_cancel, key) {
+            self.create_input.clear();
+            self.input_mode = InputMode::Normal;
+            self.status_message = Some("Create cancelled".to_string());
+            return AppAction::None;
+        }
+        if Keybinds::matches(&self.keybinds.create_confirm, key) {
+            self.create_from_input();
+            self.create_input.clear();
+            self.input_mode = InputMode::Normal;
+            return AppAction::None;
+        }
         match key.code {
-            KeyCode::Esc => {
-                self.create_input.clear();
-                self.input_mode = InputMode::Normal;
-                self.status_message = Some("Create cancelled".to_string());
-                AppAction::None
-            }
-            KeyCode::Enter => {
-                self.create_from_input();
-                self.create_input.clear();
-                self.input_mode = InputMode::Normal;
-                AppAction::None
-            }
             KeyCode::Backspace => {
                 self.create_input.pop();
                 AppAction::None
@@ -1166,32 +1158,32 @@ impl App {
     }
 
     fn handle_rename_item_key(&mut self, key: KeyEvent) -> AppAction {
+        if self.keybinds.matches_force_quit(key) {
+            return AppAction::Quit { change_dir: false };
+        }
+        if Keybinds::matches(&self.keybinds.rename_clear, key) {
+            let byte_idx = char_to_byte_idx(&self.rename_input, self.rename_cursor);
+            self.rename_input.drain(..byte_idx);
+            self.rename_cursor = 0;
+            return AppAction::None;
+        }
+        if Keybinds::matches(&self.keybinds.rename_cancel, key) {
+            self.rename_input.clear();
+            self.rename_cursor = 0;
+            self.rename_target = None;
+            self.input_mode = InputMode::Normal;
+            self.status_message = Some("Rename cancelled".to_string());
+            return AppAction::None;
+        }
+        if Keybinds::matches(&self.keybinds.rename_confirm, key) {
+            self.rename_from_input();
+            self.rename_input.clear();
+            self.rename_cursor = 0;
+            self.rename_target = None;
+            self.input_mode = InputMode::Normal;
+            return AppAction::None;
+        }
         match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                AppAction::Quit { change_dir: false }
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let byte_idx = char_to_byte_idx(&self.rename_input, self.rename_cursor);
-                self.rename_input.drain(..byte_idx);
-                self.rename_cursor = 0;
-                AppAction::None
-            }
-            KeyCode::Esc => {
-                self.rename_input.clear();
-                self.rename_cursor = 0;
-                self.rename_target = None;
-                self.input_mode = InputMode::Normal;
-                self.status_message = Some("Rename cancelled".to_string());
-                AppAction::None
-            }
-            KeyCode::Enter => {
-                self.rename_from_input();
-                self.rename_input.clear();
-                self.rename_cursor = 0;
-                self.rename_target = None;
-                self.input_mode = InputMode::Normal;
-                AppAction::None
-            }
             KeyCode::Left => {
                 self.rename_cursor = self.rename_cursor.saturating_sub(1);
                 AppAction::None
@@ -1713,6 +1705,7 @@ mod tests {
                 ..ConfigFile::default()
             },
             custom_theme: Some(custom),
+            keybinds: Keybinds::default(),
             warning: None,
         };
 
@@ -2080,6 +2073,67 @@ mod tests {
         assert!(app.visible_entries.is_empty());
         app.handle_key(KeyEvent::from(KeyCode::Char('r')));
         assert_eq!(app.input_mode, InputMode::Normal);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn custom_keybinds_override_and_unbind_actions() {
+        let root = make_test_tree();
+        let keybinds = Keybinds::from_toml_str(
+            r#"
+create_item = "c"
+rename_item = "F2"
+move_down = "n"
+toggle_hidden = []
+confirm_delete = "d"
+rename_clear = "Ctrl+k"
+"#,
+        )
+        .unwrap();
+        let loaded = LoadedConfig {
+            keybinds,
+            ..LoadedConfig::default()
+        };
+        let args = Args::try_parse_from(["lsi", root.to_str().unwrap()]).unwrap();
+        let mut app = App::new_with_config(args, loaded).unwrap();
+
+        // 'n' moves down (remapped move_down)
+        assert_eq!(app.selected_entry().unwrap().name, "alpha_dir");
+        app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        assert_eq!(app.selected_entry().unwrap().name, "beta_dir");
+
+        // '.' is unbound and does nothing
+        assert!(!app.show_hidden);
+        app.handle_key(KeyEvent::from(KeyCode::Char('.')));
+        assert!(!app.show_hidden);
+
+        // 'c' now opens CreateItem instead of cycling theme (while 'T' still cycles theme)
+        let theme_before = app.theme_name;
+        app.handle_key(KeyEvent::from(KeyCode::Char('T')));
+        assert_ne!(app.theme_name, theme_before);
+        app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+        assert_eq!(app.input_mode, InputMode::CreateItem);
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        // 'F2' opens RenameItem and Ctrl+k clears the prefilled input
+        app.handle_key(KeyEvent::from(KeyCode::F(2)));
+        assert_eq!(app.input_mode, InputMode::RenameItem);
+        assert_eq!(app.rename_input, "beta_dir");
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+        assert!(app.rename_input.is_empty());
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        // 'd' confirms permanent delete when remapped
+        app.move_selection(1); // main.rs
+        assert_eq!(app.selected_entry().unwrap().name, "main.rs");
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT));
+        assert_eq!(app.input_mode, InputMode::ConfirmDelete);
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(!root.join("main.rs").exists());
 
         let _ = fs::remove_dir_all(&root);
     }

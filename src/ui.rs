@@ -8,6 +8,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, ClipboardMode, InputMode, PreviewData};
 use crate::fs_entry::{format_permissions, format_size, format_time, FileEntry};
 use crate::icons::{get_icon, IconCategory};
+use crate::keybinds::Keybinds;
 use crate::theme::Theme;
 
 /// Renders the entire `lsi` interface for the current frame.
@@ -64,7 +65,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if app.input_mode == InputMode::Help {
-        render_help_modal(frame, &theme, area);
+        render_help_modal(frame, &theme, &app.keybinds, area);
     }
 }
 
@@ -475,6 +476,7 @@ fn render_preview(
 }
 
 fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compact: bool) {
+    let kb = &app.keybinds;
     let status_line = if app.input_mode == InputMode::Search {
         Line::from(vec![
             Span::styled(
@@ -489,7 +491,11 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
                 Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "   (Enter: lock filter, Esc: clear)",
+                format!(
+                    "   ({}: lock filter, {}: clear)",
+                    Keybinds::primary_short(&kb.search_confirm),
+                    Keybinds::primary_short(&kb.search_cancel),
+                ),
                 Style::default().fg(theme.muted),
             ),
         ])
@@ -512,7 +518,11 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
                 Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("   [{kind_hint}]  (Enter: create, Esc: cancel)"),
+                format!(
+                    "   [{kind_hint}]  ({}: create, {}: cancel)",
+                    Keybinds::primary_short(&kb.create_confirm),
+                    Keybinds::primary_short(&kb.create_cancel),
+                ),
                 Style::default().fg(theme.muted),
             ),
         ])
@@ -541,7 +551,11 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
                 Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "   (Enter: rename, Esc: cancel)",
+                format!(
+                    "   ({}: rename, {}: cancel)",
+                    Keybinds::primary_short(&kb.rename_confirm),
+                    Keybinds::primary_short(&kb.rename_cancel),
+                ),
                 Style::default().fg(theme.muted),
             ),
         ])
@@ -554,6 +568,13 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
         } else {
             format!("{} items", app.pending_delete.len())
         };
+        let confirm_key = Keybinds::primary_short(&kb.confirm_delete);
+        let cancel_key = Keybinds::primary_short(&kb.cancel_delete);
+        let prompt_keys = if confirm_key == "y" && cancel_key == "n" {
+            "(y/N)".to_string()
+        } else {
+            format!("({confirm_key}/{cancel_key})")
+        };
         Line::from(vec![
             Span::styled(
                 " DELETE ",
@@ -563,7 +584,7 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" Permanently delete {target_desc}? (y/N)"),
+                format!(" Permanently delete {target_desc}? {prompt_keys}"),
                 Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
             ),
         ])
@@ -626,7 +647,13 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
 
         if compact {
             spans.push(Span::styled(
-                "   q:Quit(cd)  Q/Esc:Quit  ?:Help",
+                format!(
+                    "   {}:Quit(cd)  {}/{}:Quit  {}:Help",
+                    Keybinds::primary_short(&kb.quit_cd),
+                    Keybinds::primary_short(&kb.quit),
+                    Keybinds::primary_short(&kb.cancel),
+                    Keybinds::primary_short(&kb.toggle_help),
+                ),
                 Style::default().fg(theme.muted),
             ));
         }
@@ -650,15 +677,32 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
         Paragraph::new(status_line).style(Style::default().bg(theme.footer_bg).fg(theme.footer_fg));
     frame.render_widget(status_widget, rows[0]);
 
+    let hints_text = format!(
+        " {}:Quit(cd)  {}/{}:Quit  {}:New  {}:Rename  {}:Sel  {}/{}/{}:Copy/Cut/Paste  {}:Trash  {}:Perm  {}:Hidden  {}:Theme  {}:Help",
+        Keybinds::primary_short(&kb.quit_cd),
+        Keybinds::primary_short(&kb.quit),
+        Keybinds::primary_short(&kb.cancel),
+        Keybinds::primary_short(&kb.create_item),
+        Keybinds::primary_short(&kb.rename_item),
+        Keybinds::primary_short(&kb.toggle_select),
+        Keybinds::primary_short(&kb.yank),
+        Keybinds::primary_short(&kb.cut),
+        Keybinds::primary_short(&kb.paste),
+        Keybinds::primary_short(&kb.trash),
+        Keybinds::primary_short(&kb.toggle_permissions),
+        Keybinds::primary_short(&kb.toggle_hidden),
+        Keybinds::primary_short(&kb.cycle_theme),
+        Keybinds::primary_short(&kb.toggle_help),
+    );
     let hints = Paragraph::new(Line::from(Span::styled(
-        " q:Quit(cd)  Q/Esc:Quit  a:New  r:Rename  Space:Sel  y/x/p:Copy/Cut/Paste  Del:Trash  P:Perm  .:Hidden  T:Theme  ?:Help",
+        hints_text,
         Style::default().fg(theme.muted),
     )))
     .style(Style::default().bg(theme.footer_bg));
     frame.render_widget(hints, rows[1]);
 }
 
-fn render_help_modal(frame: &mut Frame, theme: &Theme, area: Rect) {
+fn render_help_modal(frame: &mut Frame, theme: &Theme, kb: &Keybinds, area: Rect) {
     let modal_width = 72_u16
         .min(area.width.saturating_sub(4))
         .max(area.width.min(20));
@@ -670,35 +714,152 @@ fn render_help_modal(frame: &mut Frame, theme: &Theme, area: Rect) {
     frame.render_widget(Clear, popup_area);
 
     let keybinds = [
-        ("j / k / Down / Up", "Scroll down / up"),
-        ("g / G / Home / End", "Jump to top / bottom"),
-        ("Ctrl+d / Ctrl+u / PgDn / PgUp", "Page down / up"),
-        ("l / Right / Enter", "Open folder or file in $EDITOR"),
-        ("O", "Open file with system opener (xdg-open)"),
-        ("e", "Open file in $EDITOR"),
-        ("h / Left / Backspace", "Go to parent directory"),
-        ("- / [ / b   and   + / ] / w", "History back / forward"),
-        ("~   and   F5 / Ctrl+r", "Jump to home / refresh"),
-        ("Space", "Toggle selection on current item"),
-        ("y / x / p", "Yank (copy) / cut / paste items"),
-        ("Delete / Shift+Delete", "Move to Trash / permanently delete"),
-        ("a", "Create new file or folder (end with /)"),
-        ("r", "Rename selected file or folder"),
-        (".", "Toggle hidden files & folders"),
         (
-            "P / o / t / S / i",
+            format!(
+                "{} / {}",
+                Keybinds::format_short(&kb.move_down),
+                Keybinds::format_short(&kb.move_up),
+            ),
+            "Scroll down / up",
+        ),
+        (
+            format!(
+                "{} / {}",
+                Keybinds::format_short(&kb.jump_top),
+                Keybinds::format_short(&kb.jump_bottom),
+            ),
+            "Jump to top / bottom",
+        ),
+        (
+            format!(
+                "{} / {}",
+                Keybinds::format_short(&kb.page_down),
+                Keybinds::format_short(&kb.page_up),
+            ),
+            "Page down / up",
+        ),
+        (
+            Keybinds::format_short(&kb.open),
+            "Open folder or file in $EDITOR",
+        ),
+        (
+            Keybinds::format_short(&kb.open_system),
+            "Open file with system opener (xdg-open)",
+        ),
+        (
+            Keybinds::format_short(&kb.open_editor),
+            "Open file in $EDITOR",
+        ),
+        (
+            Keybinds::format_short(&kb.go_parent),
+            "Go to parent directory",
+        ),
+        (
+            format!(
+                "{}   and   {}",
+                Keybinds::format_short(&kb.history_back),
+                Keybinds::format_short(&kb.history_forward),
+            ),
+            "History back / forward",
+        ),
+        (
+            format!(
+                "{}   and   {}",
+                Keybinds::format_short(&kb.jump_home),
+                Keybinds::format_short(&kb.refresh),
+            ),
+            "Jump to home / refresh",
+        ),
+        (
+            Keybinds::format_short(&kb.toggle_select),
+            "Toggle selection on current item",
+        ),
+        (
+            format!(
+                "{} / {} / {}",
+                Keybinds::format_short(&kb.yank),
+                Keybinds::format_short(&kb.cut),
+                Keybinds::format_short(&kb.paste),
+            ),
+            "Yank (copy) / cut / paste items",
+        ),
+        (
+            format!(
+                "{} / {}",
+                Keybinds::format_short(&kb.trash),
+                Keybinds::format_short(&kb.permanent_delete),
+            ),
+            "Move to Trash / permanently delete",
+        ),
+        (
+            Keybinds::format_short(&kb.create_item),
+            "Create new file or folder (end with /)",
+        ),
+        (
+            Keybinds::format_short(&kb.rename_item),
+            "Rename selected file or folder",
+        ),
+        (
+            Keybinds::format_short(&kb.toggle_hidden),
+            "Toggle hidden files & folders",
+        ),
+        (
+            format!(
+                "{} / {} / {} / {} / {}",
+                Keybinds::primary_short(&kb.toggle_permissions),
+                Keybinds::primary_short(&kb.toggle_ownership),
+                Keybinds::primary_short(&kb.toggle_time),
+                Keybinds::primary_short(&kb.toggle_size),
+                Keybinds::primary_short(&kb.toggle_icons),
+            ),
             "Toggle perms / owner / time / size / icons",
         ),
-        ("L", "Toggle all long metadata columns"),
-        ("B / F", "Toggle borders / footer"),
-        ("T / c", "Cycle color themes"),
-        ("s / R / d", "Cycle sort / reverse / dirs-first"),
-        ("v / Tab", "Toggle preview pane"),
-        ("/", "Live filter entries"),
-        ("Esc", "Cancel selection / clear filter / quit"),
-        ("q", "Quit and cd (writes --cwd-file)"),
-        ("Q / Ctrl+c", "Quit without changing directory"),
-        ("?", "Toggle help modal"),
+        (
+            Keybinds::format_short(&kb.toggle_long),
+            "Toggle all long metadata columns",
+        ),
+        (
+            format!(
+                "{} / {}",
+                Keybinds::format_short(&kb.toggle_borders),
+                Keybinds::format_short(&kb.toggle_footer),
+            ),
+            "Toggle borders / footer",
+        ),
+        (
+            Keybinds::format_short(&kb.cycle_theme),
+            "Cycle color themes",
+        ),
+        (
+            format!(
+                "{} / {} / {}",
+                Keybinds::format_short(&kb.cycle_sort),
+                Keybinds::format_short(&kb.toggle_reverse_sort),
+                Keybinds::format_short(&kb.toggle_dirs_first),
+            ),
+            "Cycle sort / reverse / dirs-first",
+        ),
+        (
+            Keybinds::format_short(&kb.toggle_preview),
+            "Toggle preview pane",
+        ),
+        (Keybinds::format_short(&kb.search), "Live filter entries"),
+        (
+            Keybinds::format_short(&kb.cancel),
+            "Cancel selection / clear filter / quit",
+        ),
+        (
+            Keybinds::format_short(&kb.quit_cd),
+            "Quit and cd (writes --cwd-file)",
+        ),
+        (
+            Keybinds::format_short(&kb.quit),
+            "Quit without changing directory",
+        ),
+        (
+            Keybinds::format_short(&kb.toggle_help),
+            "Toggle help modal",
+        ),
     ];
 
     let lines: Vec<Line> = keybinds
@@ -719,7 +880,12 @@ fn render_help_modal(frame: &mut Frame, theme: &Theme, area: Rect) {
     let modal = Paragraph::new(lines)
         .block(
             Block::default()
-                .title(" lsi Keybinds (press ? or Esc to close, q to quit) ")
+                .title(format!(
+                    " lsi Keybinds (press {} or {} to close, {} to quit) ",
+                    Keybinds::primary_short(&kb.toggle_help),
+                    Keybinds::primary_short(&kb.close_help),
+                    Keybinds::primary_short(&kb.quit_cd),
+                ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(theme.accent)),
@@ -945,6 +1111,47 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let cursor_out = buffer_to_string(&terminal);
         assert!(cursor_out.contains("Cargo.▌toml"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn renders_custom_keybinds_in_footer_and_help_modal() {
+        use crate::config::LoadedConfig;
+
+        let base =
+            std::env::temp_dir().join(format!("lsi_custom_kb_ui_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("src")).unwrap();
+        fs::write(base.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+
+        let keybinds = Keybinds::from_toml_str(
+            r#"
+rename_item = "F2"
+toggle_help = "F1"
+"#,
+        )
+        .unwrap();
+        let loaded = LoadedConfig {
+            keybinds,
+            ..LoadedConfig::default()
+        };
+        let args = Args::try_parse_from(["lsi", base.to_str().unwrap()]).unwrap();
+        let mut app = App::new_with_config(args, loaded).unwrap();
+
+        let backend = TestBackend::new(140, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let footer_out = buffer_to_string(&terminal);
+        assert!(footer_out.contains("F2:Rename"));
+        assert!(footer_out.contains("F1:Help"));
+
+        app.handle_key(KeyEvent::from(KeyCode::F(1)));
+        assert_eq!(app.input_mode, InputMode::Help);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let help_out = buffer_to_string(&terminal);
+        assert!(help_out.contains("F2"));
+        assert!(help_out.contains("F1"));
 
         let _ = fs::remove_dir_all(&base);
     }

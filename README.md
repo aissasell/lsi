@@ -75,6 +75,8 @@ lsi --theme catppuccin --sort modified --reverse ~/Projects
 
 ## Keybindings
 
+Every keyboard action can be remapped (or unbound with `[]`) in `$HOME/.config/lsi/keybinds.toml`. See the [Configuration](#configuration-configtoml-themetoml--keybindstoml) section below for an example.
+
 ### Navigation & History
 
 | Key | Action |
@@ -160,12 +162,13 @@ function l() {
 }
 ```
 
-## Configuration (`config.toml` & `theme.toml`)
+## Configuration (`config.toml`, `theme.toml` & `keybinds.toml`)
 
 `lsi` looks for optional TOML configuration files in `$HOME/.config/lsi/`:
 
 - `$HOME/.config/lsi/config.toml` — Overrides hard-coded defaults (explicit CLI flags take priority over `config.toml`).
 - `$HOME/.config/lsi/theme.toml` — Defines a `custom` theme. When present, `custom` automatically becomes the default theme, while all built-in themes remain available when cycling with `T` / `c` or `--theme`.
+- `$HOME/.config/lsi/keybinds.toml` — Remaps (single string or array) or unbinds (`[]`) any action across all modes; footer hints and the `?` help overlay update automatically.
 
 ### Example `config.toml`
 
@@ -229,6 +232,21 @@ owner_self = "#e5c07b"
 owner_other = "#d19a66"
 group_fg = "#abb2bf"
 date_fg = "#56b6c2"
+```
+
+### Example `keybinds.toml`
+
+Override only the bindings you want to customize (omitted actions keep their defaults; use `[]` to unbind):
+
+```toml
+# $HOME/.config/lsi/keybinds.toml
+move_down = ["j", "Down"]
+rename_item = ["r", "F2"]
+create_item = "a"
+permanent_delete = "Shift+Delete"
+refresh = ["F5", "Ctrl+r"]
+toggle_help = ["?", "F1"]
+quit = ["Q", "Ctrl+c"]
 ```
 
 ## Themes

@@ -3,7 +3,7 @@ title: Configuration (config.toml)
 description: Reference for all options and aliases supported in $HOME/.config/lsi/config.toml.
 ---
 
-`lsi` reads optional startup defaults from `$HOME/.config/lsi/config.toml`. Values set in `config.toml` take priority over hard-coded defaults, while explicit CLI flags override `config.toml`.
+`lsi` reads optional startup defaults from `$HOME/.config/lsi/config.toml` (alongside [`theme.toml`](/lsi/reference/theme-toml/) for custom colors and [`keybinds.toml`](/lsi/reference/keybindings/) for custom keyboard shortcuts). Values set in `config.toml` take priority over hard-coded defaults, while explicit CLI flags override `config.toml`.
 
 If `config.toml` contains a syntax or type error, `lsi` falls back to defaults.
 
