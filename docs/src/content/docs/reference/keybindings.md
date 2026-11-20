@@ -85,7 +85,7 @@ Create `$HOME/.config/lsi/keybinds.toml` and override only the actions you want 
 
 | `keybinds.toml` | Key | Action |
 | --- | --- | --- |
-| `cycle_theme` | `T` / `c` | Cycle color themes (includes `custom` when `theme.toml` exists) |
+| `cycle_theme` | `T` / `c` | Cycle color themes (includes the active custom theme from `themes/` when loaded) |
 | `cycle_sort` | `s` | Cycle sort field (`name` → `size` → `modified` → `ext` → `type`) |
 | `toggle_reverse_sort` | `R` | Toggle reverse sort order |
 | `toggle_dirs_first` | `d` | Toggle grouping directories before files |

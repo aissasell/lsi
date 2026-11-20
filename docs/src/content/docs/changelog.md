@@ -5,6 +5,16 @@ description: Release history and notable changes for lsi.
 
 All notable changes to `lsi` are documented on this page.
 
+## [1.2] — 2026-11-20
+
+### Added
+
+- **Custom keybindings (`$HOME/.config/lsi/keybinds.toml`)**: Added full TOML customization for all 51 actions across Normal, Search, Confirm Delete, Create Item, Rename Item, and Help modes (supporting single keys, arrays, modifier combos, and `[]` unbinding), with footer hints and the `?` help modal dynamically displaying active keybinds.
+
+### Changed
+
+- Moved custom themes from `$HOME/.config/lsi/theme.toml` to named `.toml` files under `$HOME/.config/lsi/themes/<name>.toml` selected via `theme = "<name>"` in `config.toml` or `--theme <name>`. Files matching built-in theme names are ignored, omitted color keys inherit from `eza-dark`, and missing custom files fall back to `eza-dark`.
+
 ## [1.1] — 2026-11-19
 
 ### Added
@@ -16,7 +26,6 @@ All notable changes to `lsi` are documented on this page.
   - `Shift+Delete` permanently deletes selected items after an inline `(y/N)` confirmation prompt.
 - **New item creation (`a`)**: Reassigned `a` from toggling hidden files (kept on `.`) to an inline creation prompt (`NEW`) — enter a relative name and press `Enter` to create a file, or end the name with `/` (e.g., `newdir/`) to create a folder; press `Esc` to cancel.
 - **Inline rename (`r`)**: Added interactive file/folder renaming on `r` (`RENAME`), prefilling the footer input with the highlighted item's full name (including extension) with cursor movement (`Left`/`Right`/`Home`/`End`/`Backspace`/`Delete`/`Ctrl+u`), `Enter` to confirm, and `Esc` to cancel.
-- **Custom keybindings (`$HOME/.config/lsi/keybinds.toml`)**: Added full TOML customization for all 51 actions across Normal, Search, Confirm Delete, Create Item, Rename Item, and Help modes (supporting single keys, arrays, modifier combos, and `[]` unbinding), with footer hints and the `?` help modal dynamically displaying active keybinds.
 
 ### Changed
 

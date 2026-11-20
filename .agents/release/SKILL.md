@@ -7,6 +7,11 @@ description: Create a new release, update documentation, version numbers and run
 
 A skill to create a new release update documentation, version numbers and run tests and checks before finishing the git flow release branch.
 
+# Trigger
+
+This skill is triggered only when requested to create a new release. Any added functionalities are updated to a Unpublished release in the changelog file in the docs when working with the project in the dev branch.
+This skill should be executed only when on a release branch.
+
 # Core workflow
 
 1. **Update README.md**: Update the README.md in the root folder of the project with the changes made to the project.

@@ -16,9 +16,8 @@ lsi [OPTIONS] [PATH]
 Options resolve in the following priority order (highest to lowest):
 
 1. **Explicit CLI flags** (for example `--no-borders`, `--theme nord`, `-n 30`)
-2. **`$HOME/.config/lsi/config.toml`**
-3. **`$HOME/.config/lsi/theme.toml`** (sets the default theme to `custom` when present)
-4. **Hard-coded defaults**
+2. **`$HOME/.config/lsi/config.toml`** (custom themes resolved from `$HOME/.config/lsi/themes/<name>.toml`)
+3. **Hard-coded defaults**
 
 ## Options Reference
 
@@ -37,7 +36,7 @@ Options resolve in the following priority order (highest to lowest):
 | `--no-borders` | | `false` | Hide borders around table and preview panes |
 | `--footer` | | `true` | Show footer status bar and keybind hint bar |
 | `--no-footer` | | `false` | Hide footer status bar and keybind hint bar |
-| `--theme <THEME>` | `custom`, `eza-dark`, `catppuccin`, `dracula`, `nord`, `gruvbox`, `tokyo-night`, `solarized-light` | `custom` if `theme.toml` exists, else `eza-dark` | Initial color theme |
+| `--theme <THEME>` | `eza-dark`, `catppuccin`, `dracula`, `nord`, `gruvbox`, `tokyo-night`, `solarized-light`, or `<name>` in `themes/<name>.toml` | `eza-dark` | Initial color theme (falls back to `eza-dark` if custom file is missing) |
 | `--sort <SORT>` | `name`, `size`, `modified`, `extension`, `type` | `name` | Initial sort field |
 | `-r, --reverse` | | `false` | Reverse sort order |
 | `--dirs-first` | | `true` | Group directories before files |
