@@ -20,7 +20,7 @@ You can adjust the cap at launch (`lsi -n 12`), in `config.toml` (`max_rows = 12
 - **Entering folders**: Press `l`, `Right`, or `Enter` on a directory (or symlink pointing to a directory) to descend into it. `lsi` remembers the last selected entry per visited directory.
 - **Parent folder**: Press `h`, `Left`, or `Backspace` to move up to the parent directory—automatically selecting the folder you exited.
 - **Navigation history**: Move backward and forward through your visited directories with `-` / `[` / `b` (back) and `+` / `=` / `]` / `w` (forward).
-- **Quick jumps & refresh**: Press `~` to jump to `$HOME`, or `R` / `F5` to reload the current directory.
+- **Quick jumps & refresh**: Press `~` to jump to `$HOME`, or `F5` / `Ctrl+r` to reload the current directory.
 
 ## Opening Files (`$EDITOR` vs. System Opener)
 
@@ -34,15 +34,24 @@ All launch flags can also be toggled live while browsing:
 
 | Key | Toggles |
 | --- | --- |
-| `.` or `a` | Hidden files and folders (dotfiles) |
-| `p` | Unix permissions (`drwxr-xr-x`) |
+| `.` | Hidden files and folders (dotfiles) |
+| `P` | Unix permissions (`drwxr-xr-x`) |
 | `o` or `u` | Owner and group columns |
 | `t` | Modification date and time (`YYYY-MM-DD HH:MM`) |
 | `S` | File size column |
 | `i` | Nerd Font icons |
-| `L` | All long metadata columns (`p`, `o`, `t`, `S`) at once |
+| `L` | All long metadata columns (`P`, `o`, `t`, `S`) at once |
 | `B` | Borders around table and preview panes |
 | `F` | Footer status bar and keybind hints |
+
+## File Manipulation & Multi-Selection
+
+- **Multi-select (`Space`)**: Press `Space` to mark or unmark the highlighted file or folder and advance down one row (`●` marks selected items). Press `Esc` to clear the selection.
+- **Copy (`y`), Cut (`x`), and Paste (`p`)**: Yank or cut the multi-selected items (or the currently highlighted item if none are marked), navigate to a target folder, and press `p` to paste. Name collisions automatically receive `_copy` / `_copy_2` suffixes.
+- **Trash (`Delete`)**: Moves selected items to your FreeDesktop.org Trash bin (`$XDG_DATA_HOME/Trash` or `$HOME/.local/share/Trash`) with `.trashinfo` metadata.
+- **Permanent Delete (`Shift+Delete`)**: Prompts with `(y/N)` in the footer before permanently deleting files or directory trees (symlinks are unlinked without deleting their target).
+- **New File or Folder (`a`)**: Opens a `NEW` prompt in the footer — type a name and press `Enter` to create a file, or end the name with `/` (e.g., `newdir/`) to create a folder (nested relative paths create missing parent folders automatically). Press `Esc` to cancel.
+- **Rename (`r`)**: Opens a `RENAME` prompt in the footer prefilled with the highlighted file or folder's full name (including extension), allowing edits to any part of the name or extension using `Left` / `Right` / `Home` / `End`, `Backspace` / `Delete`, or `Ctrl+u`. Press `Enter` to apply or `Esc` to cancel.
 
 ## Side-by-Side Preview & Live Search
 
@@ -54,5 +63,5 @@ All launch flags can also be toggled live while browsing:
 ## Sorting
 
 - `s`: Cycle sort field (`name` → `size` → `modified` → `ext` → `type`).
-- `r`: Reverse sort direction.
+- `R`: Reverse sort direction.
 - `d`: Toggle grouping directories before files.

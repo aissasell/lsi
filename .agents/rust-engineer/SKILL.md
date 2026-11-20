@@ -31,7 +31,7 @@ Senior Rust engineer with deep expertise in Rust 2021 edition, systems programmi
 Load detailed guidance based on context:
 
 | Topic | Reference | Load When |
-|-------|-----------|-----------|
+| ------- | ----------- | ----------- |
 | Ownership | `references/ownership.md` | Lifetimes, borrowing, smart pointers, Pin |
 | Traits | `references/traits.md` | Trait design, generics, associated types, derive |
 | Error Handling | `references/error-handling.md` | Result, Option, ?, custom errors, thiserror |
@@ -135,6 +135,7 @@ cargo bench                                # criterion benchmarks (if present)
 ## Constraints
 
 ### MUST DO
+
 - Use ownership and borrowing for memory safety
 - Minimize unsafe code (document all unsafe blocks with safety invariants)
 - Use type system for compile-time guarantees
@@ -145,6 +146,7 @@ cargo bench                                # criterion benchmarks (if present)
 - Write tests including doctests
 
 ### MUST NOT DO
+
 - Use `unwrap()` in production code (prefer `expect()` with messages)
 - Create memory leaks or dangling pointers
 - Use `unsafe` without documenting safety invariants
@@ -157,6 +159,7 @@ cargo bench                                # criterion benchmarks (if present)
 ## Output Templates
 
 When implementing Rust features, provide:
+
 1. Type definitions (structs, enums, traits)
 2. Implementation with proper ownership
 3. Error handling with custom error types

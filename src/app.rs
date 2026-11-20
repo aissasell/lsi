@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -11,11 +11,19 @@ use ratatui::widgets::TableState;
 use crate::cli::{Args, SortField};
 use crate::config::{load_user_config, LoadedConfig};
 use crate::fs_entry::{current_uid, read_directory_with_cache, FileEntry, IdentityCache};
+use crate::fs_ops;
 use crate::theme::{Theme, ThemeName};
 
 const PREVIEW_MAX_LINES: usize = 100;
 const PREVIEW_MAX_BYTES: usize = 32 * 1024;
 const PREVIEW_DIR_LIMIT: usize = 100;
+
+fn char_to_byte_idx(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(idx, _)| idx)
+        .unwrap_or(s.len())
+}
 
 /// Current input mode for the TUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +31,23 @@ pub enum InputMode {
     Normal,
     Search,
     Help,
+    ConfirmDelete,
+    CreateItem,
+    RenameItem,
+}
+
+/// Operation mode for yanked/cut clipboard items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardMode {
+    Copy,
+    Cut,
+}
+
+/// Clipboard storing paths marked for copy (`y`) or cut (`x`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Clipboard {
+    pub mode: ClipboardMode,
+    pub paths: Vec<PathBuf>,
 }
 
 /// Action requested by `App` that the outer terminal loop should execute.
@@ -88,7 +113,16 @@ pub struct App {
 
     pub input_mode: InputMode,
     pub search_query: String,
+    pub create_input: String,
+    pub rename_input: String,
+    pub rename_cursor: usize,
+    pub rename_target: Option<PathBuf>,
     pub status_message: Option<String>,
+
+    pub selected_paths: HashSet<PathBuf>,
+    pub clipboard: Option<Clipboard>,
+    pub pending_delete: Vec<PathBuf>,
+    trash_dir_override: Option<PathBuf>,
 
     pub current_uid: u32,
     pub identity_cache: IdentityCache,
@@ -175,7 +209,15 @@ impl App {
             dirs_first,
             input_mode: InputMode::Normal,
             search_query: String::new(),
+            create_input: String::new(),
+            rename_input: String::new(),
+            rename_cursor: 0,
+            rename_target: None,
             status_message,
+            selected_paths: HashSet::new(),
+            clipboard: None,
+            pending_delete: Vec::new(),
+            trash_dir_override: None,
             current_uid: current_uid(),
             identity_cache: IdentityCache::new(),
             preview_path: None,
@@ -216,7 +258,13 @@ impl App {
             } else {
                 2
             }
-        } else if self.input_mode == InputMode::Search {
+        } else if matches!(
+            self.input_mode,
+            InputMode::Search
+                | InputMode::ConfirmDelete
+                | InputMode::CreateItem
+                | InputMode::RenameItem
+        ) {
             1
         } else {
             0
@@ -503,7 +551,30 @@ impl App {
         match self.input_mode {
             InputMode::Search => self.handle_search_key(key),
             InputMode::Help => self.handle_help_key(key),
+            InputMode::ConfirmDelete => self.handle_confirm_delete_key(key),
+            InputMode::CreateItem => self.handle_create_item_key(key),
+            InputMode::RenameItem => self.handle_rename_item_key(key),
             InputMode::Normal => self.handle_normal_key(key),
+        }
+    }
+
+    fn handle_confirm_delete_key(&mut self, key: KeyEvent) -> AppAction {
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                AppAction::Quit { change_dir: false }
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                self.execute_permanent_delete();
+                self.input_mode = InputMode::Normal;
+                AppAction::None
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
+                self.pending_delete.clear();
+                self.input_mode = InputMode::Normal;
+                self.status_message = Some("Delete cancelled".to_string());
+                AppAction::None
+            }
+            _ => AppAction::None,
         }
     }
 
@@ -566,6 +637,10 @@ impl App {
                 }
                 KeyCode::Char('u') => {
                     self.move_selection(-10);
+                    AppAction::None
+                }
+                KeyCode::Char('r') => {
+                    self.refresh_directory();
                     AppAction::None
                 }
                 _ => AppAction::None,
@@ -631,17 +706,13 @@ impl App {
                 }
                 AppAction::None
             }
-            KeyCode::Char('R') | KeyCode::F(5) => {
-                if let Err(err) = self.load_directory(None) {
-                    self.status_message = Some(format!("Refresh failed: {err}"));
-                } else {
-                    self.status_message = Some("Directory refreshed".to_string());
-                }
+            KeyCode::F(5) => {
+                self.refresh_directory();
                 AppAction::None
             }
 
             // Column & view toggles
-            KeyCode::Char('.') | KeyCode::Char('a') => {
+            KeyCode::Char('.') => {
                 self.show_hidden = !self.show_hidden;
                 self.refresh_visible_entries(None);
                 self.status_message = Some(format!(
@@ -650,7 +721,16 @@ impl App {
                 ));
                 AppAction::None
             }
-            KeyCode::Char('p') => {
+            KeyCode::Char('a') => {
+                self.create_input.clear();
+                self.input_mode = InputMode::CreateItem;
+                AppAction::None
+            }
+            KeyCode::Char('r') => {
+                self.start_rename();
+                AppAction::None
+            }
+            KeyCode::Char('P') => {
                 self.show_permissions = !self.show_permissions;
                 AppAction::None
             }
@@ -699,6 +779,32 @@ impl App {
                 AppAction::None
             }
 
+            // Selection & file operations
+            KeyCode::Char(' ') => {
+                self.toggle_select_current();
+                AppAction::None
+            }
+            KeyCode::Char('y') => {
+                self.yank_or_cut(ClipboardMode::Copy);
+                AppAction::None
+            }
+            KeyCode::Char('x') => {
+                self.yank_or_cut(ClipboardMode::Cut);
+                AppAction::None
+            }
+            KeyCode::Char('p') => {
+                self.paste_clipboard();
+                AppAction::None
+            }
+            KeyCode::Delete => {
+                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.request_permanent_delete();
+                } else {
+                    self.trash_selected();
+                }
+                AppAction::None
+            }
+
             // Themes & sorting
             KeyCode::Char('T') | KeyCode::Char('c') => {
                 self.theme_name = self.theme_name.next(self.custom_theme.is_some());
@@ -711,7 +817,7 @@ impl App {
                 self.status_message = Some(format!("Sort: {}", self.sort_field.as_str()));
                 AppAction::None
             }
-            KeyCode::Char('r') => {
+            KeyCode::Char('R') => {
                 self.sort_reverse = !self.sort_reverse;
                 self.refresh_visible_entries(None);
                 self.status_message = Some(format!(
@@ -745,7 +851,11 @@ impl App {
                 AppAction::None
             }
             KeyCode::Esc => {
-                if !self.search_query.is_empty() {
+                if !self.selected_paths.is_empty() {
+                    self.selected_paths.clear();
+                    self.status_message = Some("Selection cleared".to_string());
+                    AppAction::None
+                } else if !self.search_query.is_empty() {
                     self.search_query.clear();
                     self.refresh_visible_entries(None);
                     self.status_message = Some("Filter cleared".to_string());
@@ -759,6 +869,449 @@ impl App {
                 AppAction::None
             }
             _ => AppAction::None,
+        }
+    }
+
+    /// Returns the paths targeted by an operation: multi-selected items if any, else the current item.
+    pub fn collect_target_paths(&self) -> Vec<PathBuf> {
+        if !self.selected_paths.is_empty() {
+            let mut ordered = Vec::with_capacity(self.selected_paths.len());
+            let mut seen = HashSet::with_capacity(self.selected_paths.len());
+            for entry in &self.visible_entries {
+                if self.selected_paths.contains(&entry.path) && seen.insert(entry.path.clone()) {
+                    ordered.push(entry.path.clone());
+                }
+            }
+            let mut rest: Vec<PathBuf> = self
+                .selected_paths
+                .iter()
+                .filter(|p| !seen.contains(*p))
+                .cloned()
+                .collect();
+            rest.sort();
+            ordered.extend(rest);
+            return ordered;
+        }
+        self.selected_entry()
+            .map(|e| vec![e.path.clone()])
+            .unwrap_or_default()
+    }
+
+    fn toggle_select_current(&mut self) {
+        let Some(entry) = self.selected_entry() else {
+            return;
+        };
+        let path = entry.path.clone();
+        if !self.selected_paths.remove(&path) {
+            self.selected_paths.insert(path);
+        }
+        self.move_selection(1);
+        let count = self.selected_paths.len();
+        self.status_message = Some(if count == 0 {
+            "Selection cleared".to_string()
+        } else {
+            format!("{count} item(s) selected")
+        });
+    }
+
+    fn yank_or_cut(&mut self, mode: ClipboardMode) {
+        let targets = self.collect_target_paths();
+        if targets.is_empty() {
+            self.status_message = Some("Nothing to select".to_string());
+            return;
+        }
+        let count = targets.len();
+        self.selected_paths.clear();
+        let verb = match mode {
+            ClipboardMode::Copy => "Yanked",
+            ClipboardMode::Cut => "Cut",
+        };
+        self.clipboard = Some(Clipboard {
+            mode,
+            paths: targets,
+        });
+        self.status_message = Some(format!("{verb} {count} item(s)"));
+    }
+
+    fn paste_clipboard(&mut self) {
+        let Some(clipboard) = self.clipboard.clone() else {
+            self.status_message = Some("Clipboard is empty".to_string());
+            return;
+        };
+        if clipboard.paths.is_empty() {
+            self.clipboard = None;
+            self.status_message = Some("Clipboard is empty".to_string());
+            return;
+        }
+
+        let mut last_name: Option<String> = None;
+        let mut succeeded = 0_usize;
+        let mut skipped = 0_usize;
+        let mut remaining_cut = Vec::new();
+        let mut errors = Vec::new();
+
+        for src in &clipboard.paths {
+            match clipboard.mode {
+                ClipboardMode::Copy => match fs_ops::copy_entry(src, &self.current_dir) {
+                    Ok(dest) => {
+                        succeeded += 1;
+                        if let Some(name) = dest.file_name() {
+                            last_name = Some(name.to_string_lossy().into_owned());
+                        }
+                    }
+                    Err(err) => errors.push(err.to_string()),
+                },
+                ClipboardMode::Cut => match fs_ops::move_entry(src, &self.current_dir) {
+                    Ok(Some(dest)) => {
+                        succeeded += 1;
+                        if let Some(name) = dest.file_name() {
+                            last_name = Some(name.to_string_lossy().into_owned());
+                        }
+                    }
+                    Ok(None) => {
+                        skipped += 1;
+                    }
+                    Err(err) => {
+                        remaining_cut.push(src.clone());
+                        errors.push(err.to_string());
+                    }
+                },
+            }
+        }
+
+        if clipboard.mode == ClipboardMode::Cut {
+            if remaining_cut.is_empty() {
+                self.clipboard = None;
+            } else {
+                self.clipboard = Some(Clipboard {
+                    mode: ClipboardMode::Cut,
+                    paths: remaining_cut,
+                });
+            }
+        }
+
+        if let Err(err) = self.load_directory(last_name.as_deref()) {
+            self.status_message = Some(format!("Paste completed, refresh failed: {err}"));
+            return;
+        }
+
+        let action_word = match clipboard.mode {
+            ClipboardMode::Copy => "Copied",
+            ClipboardMode::Cut => "Moved",
+        };
+        self.status_message = Some(format_batch_status(
+            action_word,
+            succeeded,
+            skipped,
+            &errors,
+        ));
+    }
+
+    fn trash_selected(&mut self) {
+        let targets = self.collect_target_paths();
+        if targets.is_empty() {
+            return;
+        }
+
+        let prev_idx = self.table_state.selected().unwrap_or(0);
+        let prev_name = self.selected_entry().map(|e| e.name.clone());
+        let mut trashed = Vec::new();
+        let mut errors = Vec::new();
+
+        for path in &targets {
+            let res = match &self.trash_dir_override {
+                Some(dir) => fs_ops::move_to_trash_in(path, dir),
+                None => fs_ops::move_to_trash(path),
+            };
+            match res {
+                Ok(_) => trashed.push(path.clone()),
+                Err(err) => errors.push(err.to_string()),
+            }
+        }
+
+        self.prune_paths_from_state(&trashed);
+        self.reload_after_removal(prev_idx, prev_name.as_deref());
+
+        let mut msg = format!("Moved {} item(s) to Trash", trashed.len());
+        if let Some(first_err) = errors.first() {
+            msg = format!("{msg} ({} error(s): {first_err})", errors.len());
+        }
+        self.status_message = Some(msg);
+    }
+
+    fn request_permanent_delete(&mut self) {
+        let targets = self.collect_target_paths();
+        if targets.is_empty() {
+            return;
+        }
+        self.pending_delete = targets;
+        self.input_mode = InputMode::ConfirmDelete;
+    }
+
+    fn execute_permanent_delete(&mut self) {
+        let targets = std::mem::take(&mut self.pending_delete);
+        if targets.is_empty() {
+            return;
+        }
+
+        let prev_idx = self.table_state.selected().unwrap_or(0);
+        let prev_name = self.selected_entry().map(|e| e.name.clone());
+        let mut deleted = Vec::new();
+        let mut errors = Vec::new();
+
+        for path in &targets {
+            match fs_ops::permanent_delete(path) {
+                Ok(()) => deleted.push(path.clone()),
+                Err(err) => errors.push(err.to_string()),
+            }
+        }
+
+        self.prune_paths_from_state(&deleted);
+        self.reload_after_removal(prev_idx, prev_name.as_deref());
+
+        let mut msg = format!("Permanently deleted {} item(s)", deleted.len());
+        if let Some(first_err) = errors.first() {
+            msg = format!("{msg} ({} error(s): {first_err})", errors.len());
+        }
+        self.status_message = Some(msg);
+    }
+
+    fn handle_create_item_key(&mut self, key: KeyEvent) -> AppAction {
+        match key.code {
+            KeyCode::Esc => {
+                self.create_input.clear();
+                self.input_mode = InputMode::Normal;
+                self.status_message = Some("Create cancelled".to_string());
+                AppAction::None
+            }
+            KeyCode::Enter => {
+                self.create_from_input();
+                self.create_input.clear();
+                self.input_mode = InputMode::Normal;
+                AppAction::None
+            }
+            KeyCode::Backspace => {
+                self.create_input.pop();
+                AppAction::None
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.create_input.push(c);
+                AppAction::None
+            }
+            _ => AppAction::None,
+        }
+    }
+
+    fn create_from_input(&mut self) {
+        let trimmed = self.create_input.trim();
+        if trimmed.is_empty() {
+            self.status_message = Some("Create cancelled (empty name)".to_string());
+            return;
+        }
+        let is_dir = trimmed.ends_with('/');
+        match fs_ops::create_entry(&self.current_dir, trimmed) {
+            Ok(created) => {
+                let top_level = created
+                    .strip_prefix(&self.current_dir)
+                    .ok()
+                    .and_then(|rel| rel.components().next())
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned());
+                if let Err(err) = self.load_directory(top_level.as_deref()) {
+                    self.status_message = Some(format!("Created, reload failed: {err}"));
+                } else {
+                    let kind = if is_dir { "folder" } else { "file" };
+                    let rel_display = created
+                        .strip_prefix(&self.current_dir)
+                        .unwrap_or(&created)
+                        .display();
+                    self.status_message = Some(format!("Created {kind}: {rel_display}"));
+                }
+            }
+            Err(err) => {
+                self.status_message = Some(format!("Create failed: {err}"));
+            }
+        }
+    }
+
+    /// Returns `(before_cursor, after_cursor)` slices of `rename_input`.
+    pub fn split_rename_input(&self) -> (&str, &str) {
+        let byte_idx = char_to_byte_idx(&self.rename_input, self.rename_cursor);
+        self.rename_input.split_at(byte_idx)
+    }
+
+    fn refresh_directory(&mut self) {
+        if let Err(err) = self.load_directory(None) {
+            self.status_message = Some(format!("Refresh failed: {err}"));
+        } else {
+            self.status_message = Some("Directory refreshed".to_string());
+        }
+    }
+
+    fn start_rename(&mut self) {
+        let Some((path, name)) = self
+            .selected_entry()
+            .map(|entry| (entry.path.clone(), entry.name.clone()))
+        else {
+            self.status_message = Some("Nothing to rename".to_string());
+            return;
+        };
+        self.rename_target = Some(path);
+        self.rename_input = name;
+        self.rename_cursor = self.rename_input.chars().count();
+        self.input_mode = InputMode::RenameItem;
+    }
+
+    fn handle_rename_item_key(&mut self, key: KeyEvent) -> AppAction {
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                AppAction::Quit { change_dir: false }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let byte_idx = char_to_byte_idx(&self.rename_input, self.rename_cursor);
+                self.rename_input.drain(..byte_idx);
+                self.rename_cursor = 0;
+                AppAction::None
+            }
+            KeyCode::Esc => {
+                self.rename_input.clear();
+                self.rename_cursor = 0;
+                self.rename_target = None;
+                self.input_mode = InputMode::Normal;
+                self.status_message = Some("Rename cancelled".to_string());
+                AppAction::None
+            }
+            KeyCode::Enter => {
+                self.rename_from_input();
+                self.rename_input.clear();
+                self.rename_cursor = 0;
+                self.rename_target = None;
+                self.input_mode = InputMode::Normal;
+                AppAction::None
+            }
+            KeyCode::Left => {
+                self.rename_cursor = self.rename_cursor.saturating_sub(1);
+                AppAction::None
+            }
+            KeyCode::Right => {
+                let max_chars = self.rename_input.chars().count();
+                if self.rename_cursor < max_chars {
+                    self.rename_cursor += 1;
+                }
+                AppAction::None
+            }
+            KeyCode::Home => {
+                self.rename_cursor = 0;
+                AppAction::None
+            }
+            KeyCode::End => {
+                self.rename_cursor = self.rename_input.chars().count();
+                AppAction::None
+            }
+            KeyCode::Backspace => {
+                if self.rename_cursor > 0 {
+                    self.rename_cursor -= 1;
+                    let byte_idx = char_to_byte_idx(&self.rename_input, self.rename_cursor);
+                    self.rename_input.remove(byte_idx);
+                }
+                AppAction::None
+            }
+            KeyCode::Delete => {
+                let max_chars = self.rename_input.chars().count();
+                if self.rename_cursor < max_chars {
+                    let byte_idx = char_to_byte_idx(&self.rename_input, self.rename_cursor);
+                    self.rename_input.remove(byte_idx);
+                }
+                AppAction::None
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                let byte_idx = char_to_byte_idx(&self.rename_input, self.rename_cursor);
+                self.rename_input.insert(byte_idx, c);
+                self.rename_cursor += 1;
+                AppAction::None
+            }
+            _ => AppAction::None,
+        }
+    }
+
+    fn rename_from_input(&mut self) {
+        let Some(old_path) = self.rename_target.take() else {
+            return;
+        };
+        let trimmed = self.rename_input.trim().to_string();
+        if trimmed.is_empty() {
+            self.status_message = Some("Rename cancelled (empty name)".to_string());
+            return;
+        }
+        if old_path.file_name().and_then(|n| n.to_str()) == Some(trimmed.as_str()) {
+            self.status_message = Some("Rename unchanged".to_string());
+            return;
+        }
+
+        match fs_ops::rename_entry(&old_path, &trimmed) {
+            Ok(new_path) => {
+                if self.selected_paths.remove(&old_path) {
+                    self.selected_paths.insert(new_path.clone());
+                }
+                if let Some(ref mut clip) = self.clipboard {
+                    for path in &mut clip.paths {
+                        if *path == old_path {
+                            *path = new_path.clone();
+                        }
+                    }
+                }
+                if let Some(mem) = self.dir_selection_memory.remove(&old_path) {
+                    self.dir_selection_memory.insert(new_path, mem);
+                }
+                if let Err(err) = self.load_directory(Some(&trimmed)) {
+                    self.status_message = Some(format!("Renamed, reload failed: {err}"));
+                } else {
+                    self.status_message = Some(format!("Renamed to: {trimmed}"));
+                }
+            }
+            Err(err) => {
+                self.status_message = Some(format!("Rename failed: {err}"));
+            }
+        }
+    }
+
+    fn prune_paths_from_state(&mut self, removed: &[PathBuf]) {
+        if removed.is_empty() {
+            return;
+        }
+        let removed_set: HashSet<&PathBuf> = removed.iter().collect();
+        self.selected_paths.retain(|p| !removed_set.contains(p));
+        if let Some(ref mut clip) = self.clipboard {
+            clip.paths.retain(|p| !removed_set.contains(p));
+            if clip.paths.is_empty() {
+                self.clipboard = None;
+            }
+        }
+    }
+
+    fn reload_after_removal(&mut self, prev_idx: usize, prev_name: Option<&str>) {
+        if let Err(err) = self.load_directory(None) {
+            self.status_message = Some(format!("Reload failed: {err}"));
+            return;
+        }
+        if self.visible_entries.is_empty() {
+            return;
+        }
+        let still_present = prev_name
+            .map(|name| self.visible_entries.iter().any(|e| e.name == name))
+            .unwrap_or(false);
+        if !still_present {
+            let clamped = prev_idx.min(self.visible_entries.len() - 1);
+            self.table_state.select(Some(clamped));
+            self.remember_current_selection();
+            self.update_preview(true);
         }
     }
 
@@ -943,6 +1496,24 @@ const fn type_rank(entry: &FileEntry) -> u8 {
         2
     } else {
         3
+    }
+}
+
+fn format_batch_status(verb: &str, succeeded: usize, skipped: usize, errors: &[String]) -> String {
+    let mut parts = Vec::new();
+    if succeeded > 0 {
+        parts.push(format!("{verb} {succeeded} item(s)"));
+    }
+    if skipped > 0 {
+        parts.push(format!("{skipped} already here"));
+    }
+    if let Some(first_err) = errors.first() {
+        parts.push(format!("{} error(s): {first_err}", errors.len()));
+    }
+    if parts.is_empty() {
+        "Nothing changed".to_string()
+    } else {
+        parts.join("; ")
     }
 }
 
@@ -1232,6 +1803,283 @@ mod tests {
         app.write_cwd_file(Some(&cwd_file), true).unwrap();
         let written = fs::read_to_string(&cwd_file).unwrap();
         assert_eq!(PathBuf::from(written), alpha_dir);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn space_multiselect_esc_priority_and_permissions_shift_p() {
+        let root = make_test_tree();
+        let args = Args::try_parse_from(["lsi", root.to_str().unwrap()]).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
+
+        // 'P' toggles permissions column; 'p' is paste (leaves permissions unchanged)
+        assert!(!app.show_permissions);
+        app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+        assert!(!app.show_permissions);
+        app.handle_key(KeyEvent::from(KeyCode::Char('P')));
+        assert!(app.show_permissions);
+
+        // Activate a search filter first, then multi-select with Space
+        app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.visible_entries.len(), 2); // alpha_dir, beta_dir
+
+        // Space selects alpha_dir and advances to beta_dir
+        assert_eq!(app.selected_entry().unwrap().name, "alpha_dir");
+        app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+        assert_eq!(app.selected_paths.len(), 1);
+        assert_eq!(app.selected_entry().unwrap().name, "beta_dir");
+
+        // Space selects beta_dir
+        app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+        assert_eq!(app.selected_paths.len(), 2);
+
+        // Esc 1: clears multi-selection first (keeps filter active)
+        assert_eq!(
+            app.handle_key(KeyEvent::from(KeyCode::Esc)),
+            AppAction::None
+        );
+        assert!(app.selected_paths.is_empty());
+        assert_eq!(app.search_query, "d");
+
+        // Esc 2: clears search filter
+        assert_eq!(
+            app.handle_key(KeyEvent::from(KeyCode::Esc)),
+            AppAction::None
+        );
+        assert!(app.search_query.is_empty());
+
+        // Esc 3: quits without cd
+        assert_eq!(
+            app.handle_key(KeyEvent::from(KeyCode::Esc)),
+            AppAction::Quit { change_dir: false }
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn copy_cut_paste_trash_and_permanent_delete() {
+        let root = make_test_tree();
+        let trash_dir = root.join(".test_trash");
+        let args = Args::try_parse_from(["lsi", root.to_str().unwrap()]).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
+        app.trash_dir_override = Some(trash_dir.clone());
+
+        // Select main.rs (3rd visible entry: alpha_dir, beta_dir, main.rs)
+        app.move_selection(2);
+        assert_eq!(app.selected_entry().unwrap().name, "main.rs");
+
+        // Yank ('y') and paste ('p') in same directory creates main_copy.rs
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+        assert_eq!(app.clipboard.as_ref().unwrap().mode, ClipboardMode::Copy);
+        app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+        assert!(root.join("main_copy.rs").is_file());
+        assert!(root.join("main.rs").is_file());
+        // Clipboard remains intact after copy-paste
+        assert!(app.clipboard.is_some());
+
+        // Select main_copy.rs, cut ('x'), navigate into beta_dir, and paste ('p')
+        assert_eq!(app.selected_entry().unwrap().name, "main_copy.rs");
+        app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+        assert_eq!(app.clipboard.as_ref().unwrap().mode, ClipboardMode::Cut);
+
+        app.select_first();
+        app.move_selection(1); // beta_dir
+        assert_eq!(app.selected_entry().unwrap().name, "beta_dir");
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+        assert!(root.join("beta_dir/main_copy.rs").is_file());
+        assert!(!root.join("main_copy.rs").exists());
+        assert!(app.clipboard.is_none());
+
+        // Delete moves beta_dir/main_copy.rs to trash_dir
+        app.handle_key(KeyEvent::from(KeyCode::Delete));
+        assert!(!root.join("beta_dir/main_copy.rs").exists());
+        assert!(trash_dir.join("files/main_copy.rs").is_file());
+        assert!(trash_dir.join("info/main_copy.rs.trashinfo").is_file());
+
+        // Go back up to root, add an extra file, test Shift+Delete cancel ('n') then confirm ('y')
+        app.handle_key(KeyEvent::from(KeyCode::Char('h')));
+        fs::write(root.join("doomed.txt"), "bye").unwrap();
+        app.load_directory(Some("doomed.txt")).unwrap();
+        assert_eq!(app.selected_entry().unwrap().name, "doomed.txt");
+
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT));
+        assert_eq!(app.input_mode, InputMode::ConfirmDelete);
+        assert_eq!(app.desired_inline_height(), app.desired_inline_height());
+        app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(root.join("doomed.txt").is_file());
+
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT));
+        assert_eq!(app.input_mode, InputMode::ConfirmDelete);
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(!root.join("doomed.txt").exists());
+        assert!(!trash_dir.join("files/doomed.txt").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn create_new_file_and_folder_via_a_key_and_toggle_hidden_via_dot() {
+        let root = make_test_tree();
+        let args = Args::try_parse_from(["lsi", root.to_str().unwrap()]).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
+        assert!(!app.show_hidden);
+
+        // '.' still toggles hidden files
+        app.handle_key(KeyEvent::from(KeyCode::Char('.')));
+        assert!(app.show_hidden);
+        app.handle_key(KeyEvent::from(KeyCode::Char('.')));
+        assert!(!app.show_hidden);
+
+        // 'a' opens CreateItem prompt without toggling hidden files
+        app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+        assert_eq!(app.input_mode, InputMode::CreateItem);
+        assert!(!app.show_hidden);
+
+        // Esc cancels creation and leaves filesystem untouched
+        app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+        app.handle_key(KeyEvent::from(KeyCode::Backspace));
+        for ch in "temp.txt".chars() {
+            app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+        }
+        assert_eq!(app.create_input, "temp.txt");
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.create_input.is_empty());
+        assert!(!root.join("temp.txt").exists());
+
+        // Create a new file via 'a' + name + Enter
+        app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+        for ch in "notes.md".chars() {
+            app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+        }
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(root.join("notes.md").is_file());
+        assert_eq!(app.selected_entry().unwrap().name, "notes.md");
+
+        // Create a new folder via 'a' + trailing '/' + Enter
+        app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+        for ch in "newdir/".chars() {
+            app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+        }
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(root.join("newdir").is_dir());
+        assert_eq!(app.selected_entry().unwrap().name, "newdir");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_file_extension_folder_cursor_editing_and_reassigned_keys() {
+        let root = make_test_tree();
+        let args = Args::try_parse_from(["lsi", root.to_str().unwrap()]).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
+
+        // Highlight main.rs (visible: alpha_dir, beta_dir, main.rs) and rename its extension to .md
+        app.move_selection(2);
+        assert_eq!(app.selected_entry().unwrap().name, "main.rs");
+        app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+        assert_eq!(app.input_mode, InputMode::RenameItem);
+        assert_eq!(app.rename_input, "main.rs");
+        assert_eq!(app.rename_cursor, "main.rs".chars().count());
+
+        app.handle_key(KeyEvent::from(KeyCode::Backspace));
+        app.handle_key(KeyEvent::from(KeyCode::Backspace));
+        app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(!root.join("main.rs").exists());
+        assert!(root.join("main.md").is_file());
+        let renamed = app.selected_entry().unwrap();
+        assert_eq!(renamed.name, "main.md");
+        assert_eq!(renamed.extension, "md");
+
+        // Mark alpha_dir in both selected_paths and clipboard, then rename via Left/Home/Delete/Ctrl+u
+        app.select_first();
+        assert_eq!(app.selected_entry().unwrap().name, "alpha_dir");
+        let old_alpha_path = app.selected_entry().unwrap().path.clone();
+        app.selected_paths.insert(old_alpha_path.clone());
+        app.clipboard = Some(Clipboard {
+            mode: ClipboardMode::Copy,
+            paths: vec![old_alpha_path.clone()],
+        });
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+        assert_eq!(app.rename_input, "alpha_dir");
+        // Move left across "_dir" (4 chars) and delete to test Left/Home/Delete/Ctrl+u/UTF-8
+        for _ in 0..4 {
+            app.handle_key(KeyEvent::from(KeyCode::Left));
+        }
+        assert_eq!(app.split_rename_input(), ("alpha", "_dir"));
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(app.split_rename_input(), ("", "_dir"));
+        for ch in "café".chars() {
+            app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+        }
+        app.handle_key(KeyEvent::from(KeyCode::Home));
+        app.handle_key(KeyEvent::from(KeyCode::Delete)); // remove 'c' -> "afé_dir"
+        app.handle_key(KeyEvent::from(KeyCode::Char('c'))); // restore 'c' -> "café_dir"
+        app.handle_key(KeyEvent::from(KeyCode::End));
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+
+        assert!(root.join("café_dir").is_dir());
+        assert!(!root.join("alpha_dir").exists());
+        let expected_new_path = old_alpha_path.parent().unwrap().join("café_dir");
+        assert_eq!(app.selected_entry().unwrap().name, "café_dir");
+        assert!(app.selected_paths.contains(&expected_new_path));
+        assert!(!app.selected_paths.contains(&old_alpha_path));
+        assert_eq!(
+            app.clipboard.as_ref().unwrap().paths,
+            vec![expected_new_path]
+        );
+
+        // Esc cancels rename without modifying disk
+        app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+        app.handle_key(KeyEvent::from(KeyCode::Backspace));
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(root.join("café_dir").is_dir());
+
+        // 'R' toggles reverse sort order
+        assert!(!app.sort_reverse);
+        app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+        assert!(app.sort_reverse);
+        app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+        assert!(!app.sort_reverse);
+
+        // Ctrl+r and F5 refresh directory contents
+        fs::write(root.join("external_ctrl_r.txt"), "1").unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert!(app
+            .visible_entries
+            .iter()
+            .any(|e| e.name == "external_ctrl_r.txt"));
+
+        fs::write(root.join("external_f5.txt"), "2").unwrap();
+        app.handle_key(KeyEvent::from(KeyCode::F(5)));
+        assert!(app
+            .visible_entries
+            .iter()
+            .any(|e| e.name == "external_f5.txt"));
+
+        // Pressing 'r' in an empty directory stays in Normal mode
+        let empty_dir = root.join("empty_sub");
+        fs::create_dir(&empty_dir).unwrap();
+        app.load_directory(Some("empty_sub")).unwrap();
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.visible_entries.is_empty());
+        app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+        assert_eq!(app.input_mode, InputMode::Normal);
 
         let _ = fs::remove_dir_all(&root);
     }

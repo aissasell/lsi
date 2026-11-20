@@ -5,6 +5,23 @@ description: Release history and notable changes for lsi.
 
 All notable changes to `lsi` are documented on this page.
 
+## [1.1] — 2026-11-19
+
+### Added
+
+- **Multi-selection & file manipulation**:
+  - `Space` toggles multi-selection on the highlighted entry (and advances one row), while `Esc` cancels multi-selection before clearing filters or exiting.
+  - `y` yanks (copies), `x` cuts, and `p` pastes files and directories into the current directory (handling collisions and cross-device moves).
+  - `Delete` moves selected items to the FreeDesktop.org Trash bin (`files/` + `info/*.trashinfo`).
+  - `Shift+Delete` permanently deletes selected items after an inline `(y/N)` confirmation prompt.
+- **New item creation (`a`)**: Reassigned `a` from toggling hidden files (kept on `.`) to an inline creation prompt (`NEW`) — enter a relative name and press `Enter` to create a file, or end the name with `/` (e.g., `newdir/`) to create a folder; press `Esc` to cancel.
+- **Inline rename (`r`)**: Added interactive file/folder renaming on `r` (`RENAME`), prefilling the footer input with the highlighted item's full name (including extension) with cursor movement (`Left`/`Right`/`Home`/`End`/`Backspace`/`Delete`/`Ctrl+u`), `Enter` to confirm, and `Esc` to cancel.
+
+### Changed
+
+- Reassigned toggling the permissions column from `p` to `P` (`Shift+p`) so `p` can be used for paste.
+- Reassigned reverse sort order from `r` to `R` (`Shift+r`) and moved manual directory refresh to `F5` / `Ctrl+r` so `r` can be used for renaming.
+
 ## [1.0.0] — 2026-11-19
 
 ### Added

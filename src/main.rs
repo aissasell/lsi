@@ -2,6 +2,7 @@ mod app;
 mod cli;
 mod config;
 mod fs_entry;
+mod fs_ops;
 mod icons;
 mod theme;
 mod ui;

@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, 
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, InputMode, PreviewData};
+use crate::app::{App, ClipboardMode, InputMode, PreviewData};
 use crate::fs_entry::{format_permissions, format_size, format_time, FileEntry};
 use crate::icons::{get_icon, IconCategory};
 use crate::theme::Theme;
@@ -29,7 +29,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         } else {
             2
         }
-    } else if app.input_mode == InputMode::Search {
+    } else if matches!(
+        app.input_mode,
+        InputMode::Search | InputMode::ConfirmDelete | InputMode::CreateItem | InputMode::RenameItem
+    ) {
         1
     } else {
         0
@@ -213,7 +216,20 @@ fn build_entry_row<'a>(entry: &FileEntry, app: &App, theme: &Theme) -> Row<'a> {
         )));
     }
 
-    cells.push(Cell::from(name_line(entry, app.show_icons, theme)));
+    let is_selected = app.selected_paths.contains(&entry.path);
+    let clip_mode = app
+        .clipboard
+        .as_ref()
+        .filter(|clip| clip.paths.iter().any(|p| p == &entry.path))
+        .map(|clip| clip.mode);
+
+    cells.push(Cell::from(name_line_marked(
+        entry,
+        app.show_icons,
+        is_selected,
+        clip_mode,
+        theme,
+    )));
     Row::new(cells)
 }
 
@@ -250,6 +266,16 @@ fn size_line<'a>(entry: &FileEntry, theme: &Theme) -> Line<'a> {
 }
 
 fn name_line<'a>(entry: &FileEntry, show_icons: bool, theme: &Theme) -> Line<'a> {
+    name_line_marked(entry, show_icons, false, None, theme)
+}
+
+fn name_line_marked<'a>(
+    entry: &FileEntry,
+    show_icons: bool,
+    is_selected: bool,
+    clip_mode: Option<ClipboardMode>,
+    theme: &Theme,
+) -> Line<'a> {
     let icon = get_icon(entry, show_icons);
     let color = category_color(entry, icon.category, theme);
 
@@ -259,6 +285,27 @@ fn name_line<'a>(entry: &FileEntry, show_icons: bool, theme: &Theme) -> Line<'a>
     }
 
     let mut spans = Vec::new();
+    if is_selected {
+        spans.push(Span::styled(
+            "● ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    match clip_mode {
+        Some(ClipboardMode::Cut) => {
+            spans.push(Span::styled(
+                "✂ ",
+                Style::default().fg(theme.broken_symlink_fg),
+            ));
+        }
+        Some(ClipboardMode::Copy) => {
+            spans.push(Span::styled("+ ", Style::default().fg(theme.exec_fg)));
+        }
+        None => {}
+    }
+
     if show_icons && !icon.glyph.is_empty() {
         spans.push(Span::styled(
             format!("{} ", icon.glyph),
@@ -446,6 +493,80 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
                 Style::default().fg(theme.muted),
             ),
         ])
+    } else if app.input_mode == InputMode::CreateItem {
+        let kind_hint = if app.create_input.trim_end().ends_with('/') {
+            "folder"
+        } else {
+            "file (end with / for folder)"
+        };
+        Line::from(vec![
+            Span::styled(
+                " NEW ",
+                Style::default()
+                    .bg(theme.accent)
+                    .fg(theme.selected_fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {}▌", app.create_input),
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("   [{kind_hint}]  (Enter: create, Esc: cancel)"),
+                Style::default().fg(theme.muted),
+            ),
+        ])
+    } else if app.input_mode == InputMode::RenameItem {
+        let (before, after) = app.split_rename_input();
+        Line::from(vec![
+            Span::styled(
+                " RENAME ",
+                Style::default()
+                    .bg(theme.accent)
+                    .fg(theme.selected_fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {before}"),
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "▌",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                after.to_string(),
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "   (Enter: rename, Esc: cancel)",
+                Style::default().fg(theme.muted),
+            ),
+        ])
+    } else if app.input_mode == InputMode::ConfirmDelete {
+        let target_desc = if app.pending_delete.len() == 1 {
+            app.pending_delete[0]
+                .file_name()
+                .map(|n| format!("'{}'", n.to_string_lossy()))
+                .unwrap_or_else(|| "1 item".to_string())
+        } else {
+            format!("{} items", app.pending_delete.len())
+        };
+        Line::from(vec![
+            Span::styled(
+                " DELETE ",
+                Style::default()
+                    .bg(theme.broken_symlink_fg)
+                    .fg(theme.selected_fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" Permanently delete {target_desc}? (y/N)"),
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+            ),
+        ])
     } else {
         let total = app.visible_entries.len();
         let pos = match app.table_state.selected() {
@@ -459,6 +580,26 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )];
+
+        if !app.selected_paths.is_empty() {
+            spans.push(Span::styled(
+                format!("[{} sel] ", app.selected_paths.len()),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        if let Some(clip) = &app.clipboard {
+            let (label, color) = match clip.mode {
+                ClipboardMode::Copy => (format!("[{} yanked] ", clip.paths.len()), theme.exec_fg),
+                ClipboardMode::Cut => (
+                    format!("[{} cut] ", clip.paths.len()),
+                    theme.broken_symlink_fg,
+                ),
+            };
+            spans.push(Span::styled(label, Style::default().fg(color)));
+        }
 
         if let Some(msg) = &app.status_message {
             spans.push(Span::styled(
@@ -510,7 +651,7 @@ fn render_footer(frame: &mut Frame, app: &App, theme: &Theme, area: Rect, compac
     frame.render_widget(status_widget, rows[0]);
 
     let hints = Paragraph::new(Line::from(Span::styled(
-        " q:Quit(cd)  Q/Esc:Quit  hjkl/Arrows:Nav  -/+:History  .:Hidden  p:Perm  o:Owner  t:Time  T:Theme  v:Preview  /:Filter  ?:Help",
+        " q:Quit(cd)  Q/Esc:Quit  a:New  r:Rename  Space:Sel  y/x/p:Copy/Cut/Paste  Del:Trash  P:Perm  .:Hidden  T:Theme  ?:Help",
         Style::default().fg(theme.muted),
     )))
     .style(Style::default().bg(theme.footer_bg));
@@ -521,7 +662,7 @@ fn render_help_modal(frame: &mut Frame, theme: &Theme, area: Rect) {
     let modal_width = 72_u16
         .min(area.width.saturating_sub(4))
         .max(area.width.min(20));
-    let modal_height = 22_u16
+    let modal_height = 28_u16
         .min(area.height.saturating_sub(2))
         .max(area.height.min(6));
     let popup_area = centered_rect(modal_width, modal_height, area);
@@ -537,20 +678,26 @@ fn render_help_modal(frame: &mut Frame, theme: &Theme, area: Rect) {
         ("e", "Open file in $EDITOR"),
         ("h / Left / Backspace", "Go to parent directory"),
         ("- / [ / b   and   + / ] / w", "History back / forward"),
-        ("~   and   R / F5", "Jump to home / refresh"),
-        (". / a", "Toggle hidden files & folders"),
+        ("~   and   F5 / Ctrl+r", "Jump to home / refresh"),
+        ("Space", "Toggle selection on current item"),
+        ("y / x / p", "Yank (copy) / cut / paste items"),
+        ("Delete / Shift+Delete", "Move to Trash / permanently delete"),
+        ("a", "Create new file or folder (end with /)"),
+        ("r", "Rename selected file or folder"),
+        (".", "Toggle hidden files & folders"),
         (
-            "p / o / t / S / i",
+            "P / o / t / S / i",
             "Toggle perms / owner / time / size / icons",
         ),
         ("L", "Toggle all long metadata columns"),
         ("B / F", "Toggle borders / footer"),
         ("T / c", "Cycle color themes"),
-        ("s / r / d", "Cycle sort / reverse / dirs-first"),
+        ("s / R / d", "Cycle sort / reverse / dirs-first"),
         ("v / Tab", "Toggle preview pane"),
-        ("/   and   Esc", "Filter entries / clear filter"),
+        ("/", "Live filter entries"),
+        ("Esc", "Cancel selection / clear filter / quit"),
         ("q", "Quit and cd (writes --cwd-file)"),
-        ("Q / Esc", "Quit without changing directory"),
+        ("Q / Ctrl+c", "Quit without changing directory"),
         ("?", "Toggle help modal"),
     ];
 
@@ -731,6 +878,73 @@ mod tests {
         assert!(!out.contains('╭'));
         assert!(!out.contains('╰'));
         assert!(!out.contains("?:Help"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn renders_selection_clipboard_and_confirm_delete_prompt() {
+        use crossterm::event::KeyModifiers;
+
+        let base = std::env::temp_dir().join(format!("lsi_ops_ui_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("src")).unwrap();
+        fs::write(base.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+
+        let args = Args::try_parse_from(["lsi", base.to_str().unwrap()]).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
+
+        // Multi-select first item ('src') with Space
+        app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+        let backend = TestBackend::new(100, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let sel_out = buffer_to_string(&terminal);
+        assert!(sel_out.contains("● "));
+        assert!(sel_out.contains("[1 sel]"));
+
+        // Yank with 'y' shows '+' marker and '[1 yanked]' badge
+        app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let yank_out = buffer_to_string(&terminal);
+        assert!(yank_out.contains("+ "));
+        assert!(yank_out.contains("[1 yanked]"));
+
+        // Shift+Delete renders permanent delete confirmation prompt
+        app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let del_out = buffer_to_string(&terminal);
+        assert!(del_out.contains("DELETE"));
+        assert!(del_out.contains("Permanently delete"));
+        assert!(del_out.contains("(y/N)"));
+
+        // Cancel delete and open NEW creation prompt via 'a'
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let new_out = buffer_to_string(&terminal);
+        assert!(new_out.contains("NEW"));
+        assert!(new_out.contains("d/"));
+        assert!(new_out.contains("[folder]"));
+
+        // Cancel create and open RENAME prompt prefilled with highlighted 'Cargo.toml'
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let rename_out = buffer_to_string(&terminal);
+        assert!(rename_out.contains("RENAME"));
+        assert!(rename_out.contains("Cargo.toml▌"));
+        assert!(rename_out.contains("(Enter: rename, Esc: cancel)"));
+
+        // Moving cursor left places '▌' before 'toml'
+        for _ in 0..4 {
+            app.handle_key(KeyEvent::from(KeyCode::Left));
+        }
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let cursor_out = buffer_to_string(&terminal);
+        assert!(cursor_out.contains("Cargo.▌toml"));
 
         let _ = fs::remove_dir_all(&base);
     }

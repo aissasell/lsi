@@ -89,14 +89,28 @@ lsi --theme catppuccin --sort modified --reverse ~/Projects
 | `-` / `[` / `b` | Navigate back in history |
 | `+` / `=` / `]` / `w` | Navigate forward in history |
 | `~` | Jump to `$HOME` |
-| `R` / `F5` | Refresh current directory |
+| `F5` / `Ctrl+r` | Refresh current directory |
+
+### File Manipulation & Multi-Selection
+
+| Key | Action |
+| --- | --- |
+| `Space` | Toggle multi-selection on the highlighted item and move down 1 row |
+| `y` | Yank (copy) selected items (or current item) |
+| `x` | Cut selected items (or current item) |
+| `p` | Paste yanked/cut files and directories into the current directory |
+| `Delete` | Move selected items (or current item) to the Trash bin |
+| `a` | Create a new file or folder (end name with `/` for folder; `Enter` creates, `Esc` cancels) |
+| `r` | Rename the highlighted file or folder (prefilled with full name & extension; `Enter` renames, `Esc` cancels) |
+| `Shift+Delete` | Permanently delete selected items (or current item) after `(y/N)` confirmation |
+| `Esc` | Cancel multi-selection (if active), clear filter (if active), or exit without `cd` |
 
 ### View, Sorting, Themes & Search
 
 | Key | Action |
 | --- | --- |
-| `.` / `a` | Toggle hidden files and folders |
-| `p` | Toggle permissions column |
+| `.` | Toggle hidden files and folders |
+| `P` | Toggle permissions column |
 | `o` / `u` | Toggle owner & group columns |
 | `t` | Toggle modification date & time column |
 | `S` | Toggle size column |
@@ -106,11 +120,11 @@ lsi --theme catppuccin --sort modified --reverse ~/Projects
 | `L` | Toggle all long metadata columns at once |
 | `T` / `c` | Cycle color themes (includes `custom` when `theme.toml` exists) |
 | `s` | Cycle sort field (`name`, `size`, `modified`, `ext`, `type`) |
-| `r` | Toggle reverse sort order |
+| `R` | Toggle reverse sort order |
 | `d` | Toggle directories-first grouping |
 | `v` / `Tab` | Toggle side-by-side preview pane |
 | `/` | Activate live filter (`Enter` to lock filter, `Esc` to clear) |
-| `Esc` | Clear active filter, or exit without changing directory when no filter is active |
+| `Esc` | Cancel active selection, clear active filter, or exit without changing directory |
 | `?` | Toggle help overlay |
 | `q` | Exit `lsi` and change directory (writes `--cwd-file`) |
 | `Q` / `Ctrl+c` | Exit `lsi` without changing directory |
