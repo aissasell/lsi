@@ -63,7 +63,7 @@ lsi --theme catppuccin --sort modified --reverse ~/Projects
 | `--icons` / `--no-icons` | | Show or disable Nerd Font icons (enabled by default) |
 | `--borders` / `--no-borders` | | Show or hide borders around table and preview panes (enabled by default) |
 | `--footer` / `--no-footer` | | Show or hide the footer status and keybind hint bar (enabled by default) |
-| `--theme <THEME>` | `custom` (when `theme.toml` exists), `eza-dark` (default), `catppuccin`, `dracula`, `nord`, `gruvbox`, `tokyo-night`, `solarized-light` | Initial color theme |
+| `--theme <THEME>` | `eza-dark` (default), `catppuccin`, `dracula`, `nord`, `gruvbox`, `tokyo-night`, `solarized-light`, or `<name>` in `$HOME/.config/lsi/themes/<name>.toml` | Initial color theme |
 | `--sort <SORT>` | `name` (default), `size`, `modified`, `extension`, `type` | Initial sort field |
 | `-r, --reverse` | | Reverse sort order |
 | `--dirs-first` / `--no-dirs-first` | | Group (or do not group) directories before files |
@@ -120,7 +120,7 @@ Every keyboard action can be remapped (or unbound with `[]`) in `$HOME/.config/l
 | `B` | Toggle borders around table and preview panes |
 | `F` | Toggle footer status and keybind hint bar |
 | `L` | Toggle all long metadata columns at once |
-| `T` / `c` | Cycle color themes (includes `custom` when `theme.toml` exists) |
+| `T` / `c` | Cycle color themes (includes active custom theme from `themes/` when loaded) |
 | `s` | Cycle sort field (`name`, `size`, `modified`, `ext`, `type`) |
 | `R` | Toggle reverse sort order |
 | `d` | Toggle directories-first grouping |
@@ -162,12 +162,12 @@ function l() {
 }
 ```
 
-## Configuration (`config.toml`, `theme.toml` & `keybinds.toml`)
+## Configuration (`config.toml`, `themes/*.toml` & `keybinds.toml`)
 
-`lsi` looks for optional TOML configuration files in `$HOME/.config/lsi/`:
+`lsi` looks for optional TOML configuration in `$HOME/.config/lsi/`:
 
 - `$HOME/.config/lsi/config.toml` — Overrides hard-coded defaults (explicit CLI flags take priority over `config.toml`).
-- `$HOME/.config/lsi/theme.toml` — Defines a `custom` theme. When present, `custom` automatically becomes the default theme, while all built-in themes remain available when cycling with `T` / `c` or `--theme`.
+- `$HOME/.config/lsi/themes/<name>.toml` — Stores named custom themes. Set `theme = "<name>"` in `config.toml` (or pass `--theme <name>`) to load `<name>.toml` as custom; built-in theme files (like `catppuccin.toml`) are ignored, omitted colors fall back to `eza-dark`, and missing custom files fall back to `eza-dark`.
 - `$HOME/.config/lsi/keybinds.toml` — Remaps (single string or array) or unbinds (`[]`) any action across all modes; footer hints and the `?` help overlay update automatically.
 
 ### Example `config.toml`
@@ -186,11 +186,11 @@ show_preview = false
 dirs_first = true
 reverse = false
 sort = "name"        # name, size, modified, extension (or ext), type
-# theme = "eza-dark" # optional override: custom, eza-dark, catppuccin, dracula, nord, gruvbox, tokyo-night, solarized-light
+# theme = "eza-dark" # built-in name or <name> from $HOME/.config/lsi/themes/<name>.toml
 max_rows = 20
 ```
 
-### Example `theme.toml`
+### Example `$HOME/.config/lsi/themes/my-theme.toml`
 
 Colors accept hex strings (`"#rrggbb"` / `"rrggbb"`), RGB arrays (`[r, g, b]`), `"rgb(r, g, b)"`, or terminal color names (`"blue"`, `"light-cyan"`, `"reset"`, etc.). Any omitted fields fall back to `eza-dark`:
 
@@ -251,13 +251,14 @@ quit = ["Q", "Ctrl+c"]
 
 ## Themes
 
-Cycle themes anytime with `T` or `c`, or pass `--theme <name>` on launch:
+Cycle themes anytime with `T` or `c`, configure `theme = "<name>"` in `$HOME/.config/lsi/config.toml`, or pass `--theme <name>` on launch:
 
-- `custom` (loaded from `$HOME/.config/lsi/theme.toml` and used as default when present)
-- `eza-dark` (default when no `theme.toml` exists)
-- `catppuccin`
-- `dracula`
-- `nord`
-- `gruvbox`
-- `tokyo-night`
-- `solarized-light`
+- Built-in themes:
+  - `eza-dark` (default)
+  - `catppuccin`
+  - `dracula`
+  - `nord`
+  - `gruvbox`
+  - `tokyo-night`
+  - `solarized-light`
+- Custom themes: place `<name>.toml` inside `$HOME/.config/lsi/themes/` (any name other than the 7 built-in themes, e.g., `catppuccin-mocha-mauve.toml` is loaded when `theme = "catppuccin-mocha-mauve"`, while `catppuccin.toml` is ignored)

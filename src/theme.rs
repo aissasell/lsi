@@ -1,11 +1,9 @@
 use anyhow::{bail, Context, Result};
-use clap::ValueEnum;
 use ratatui::style::Color;
 use serde::Deserialize;
 
 /// Built-in and custom color themes supported by `lsi`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThemeName {
     Custom,
     #[default]
@@ -31,7 +29,7 @@ impl ThemeName {
         Self::SolarizedLight,
     ];
 
-    /// Human-readable kebab-case display name matching CLI `--theme` values.
+    /// Human-readable kebab-case display name for built-in themes and the custom slot.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Custom => "custom",
@@ -42,6 +40,20 @@ impl ThemeName {
             Self::Gruvbox => "gruvbox",
             Self::TokyoNight => "tokyo-night",
             Self::SolarizedLight => "solarized-light",
+        }
+    }
+
+    /// Parses one of the 7 built-in theme names case-insensitively.
+    pub fn parse_builtin(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "eza-dark" => Some(Self::EzaDark),
+            "catppuccin" => Some(Self::Catppuccin),
+            "dracula" => Some(Self::Dracula),
+            "nord" => Some(Self::Nord),
+            "gruvbox" => Some(Self::Gruvbox),
+            "tokyo-night" => Some(Self::TokyoNight),
+            "solarized-light" => Some(Self::SolarizedLight),
+            _ => None,
         }
     }
 
@@ -521,7 +533,7 @@ fn resolve_opt_color(spec: Option<ColorSpec>, default: Color) -> Result<Color> {
 impl Theme {
     /// Parses a custom theme from TOML content, merging omitted colors from `eza-dark`.
     pub fn from_toml_str(content: &str) -> Result<Self> {
-        let cfg: ThemeConfig = toml::from_str(content).context("Failed to parse theme.toml")?;
+        let cfg: ThemeConfig = toml::from_str(content).context("Failed to parse theme file")?;
         let base = ThemeName::EzaDark.palette();
 
         Ok(Self {
@@ -589,6 +601,20 @@ mod tests {
         assert_eq!(ThemeName::SolarizedLight.next(true), ThemeName::Custom);
         assert_eq!(ThemeName::Custom.prev(true), ThemeName::SolarizedLight);
         assert_eq!(ThemeName::EzaDark.prev(true), ThemeName::Custom);
+    }
+
+    #[test]
+    fn parses_builtin_theme_names_only() {
+        for theme in ThemeName::BUILTIN {
+            assert_eq!(ThemeName::parse_builtin(theme.as_str()), Some(theme));
+            assert_eq!(
+                ThemeName::parse_builtin(&theme.as_str().to_ascii_uppercase()),
+                Some(theme)
+            );
+        }
+        assert_eq!(ThemeName::parse_builtin("custom"), None);
+        assert_eq!(ThemeName::parse_builtin("my-theme"), None);
+        assert_eq!(ThemeName::parse_builtin("catppuccin-mocha-mauve"), None);
     }
 
     #[test]

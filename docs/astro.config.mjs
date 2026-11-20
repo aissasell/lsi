@@ -37,7 +37,7 @@ export default defineConfig({
             { label: 'CLI Options', slug: 'reference/cli' },
             { label: 'Keybindings', slug: 'reference/keybindings' },
             { label: 'Configuration (config.toml)', slug: 'reference/configuration' },
-            { label: 'Theme Reference (theme.toml)', slug: 'reference/theme-toml' },
+            { label: 'Theme Reference (themes/*.toml)', slug: 'reference/theme-toml' },
           ],
         },
         { label: 'Changelog', slug: 'changelog' },

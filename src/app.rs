@@ -9,7 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 
 use crate::cli::{Args, SortField};
-use crate::config::{load_user_config, LoadedConfig};
+use crate::config::{load_named_theme, load_user_config, LoadedConfig, ThemeLoadOutcome};
 use crate::fs_entry::{current_uid, read_directory_with_cache, FileEntry, IdentityCache};
 use crate::fs_ops;
 use crate::keybinds::{Keybinds, NormalAction};
@@ -108,6 +108,7 @@ pub struct App {
 
     pub theme_name: ThemeName,
     pub custom_theme: Option<Theme>,
+    pub custom_theme_name: Option<String>,
     pub keybinds: Keybinds,
     pub sort_field: SortField,
     pub sort_reverse: bool,
@@ -171,20 +172,57 @@ impl App {
         let sort_field = args.sort.or(cfg.sort).unwrap_or(SortField::Name);
         let max_rows = args.max_rows.or(cfg.max_rows).unwrap_or(20).max(3);
 
-        let mut theme_name = args.theme.or(cfg.theme).unwrap_or(
-            if loaded.custom_theme.is_some() {
+        let mut custom_theme = loaded.custom_theme;
+        let mut custom_theme_name = loaded.custom_theme_name;
+        let mut status_message = loaded.warning.map(|w| format!("Config warning: {w}"));
+
+        let theme_name = if let Some(cli_theme) = args.theme.as_deref() {
+            let trimmed = cli_theme.trim();
+            if let Some(builtin) = ThemeName::parse_builtin(trimmed) {
+                builtin
+            } else if custom_theme.is_some() && custom_theme_name.as_deref() == Some(trimmed) {
+                ThemeName::Custom
+            } else if let Some(ref themes_dir) = loaded.themes_dir {
+                match load_named_theme(themes_dir, trimmed) {
+                    ThemeLoadOutcome::Builtin(b) => b,
+                    ThemeLoadOutcome::Custom { name, theme } => {
+                        custom_theme = Some(theme);
+                        custom_theme_name = Some(name);
+                        ThemeName::Custom
+                    }
+                    ThemeLoadOutcome::NotFound { name } => {
+                        status_message =
+                            Some(format!("Theme '{name}' not found; falling back to eza-dark"));
+                        ThemeName::EzaDark
+                    }
+                    ThemeLoadOutcome::Invalid { error } => {
+                        status_message = Some(format!("Config warning: {error}"));
+                        ThemeName::EzaDark
+                    }
+                }
+            } else {
+                status_message = Some(format!(
+                    "Theme '{trimmed}' not found; falling back to eza-dark"
+                ));
+                ThemeName::EzaDark
+            }
+        } else if let Some(cfg_theme) = cfg.theme.as_deref() {
+            if let Some(builtin) = ThemeName::parse_builtin(cfg_theme) {
+                builtin
+            } else if custom_theme.is_some() {
                 ThemeName::Custom
             } else {
+                if status_message.is_none() {
+                    status_message = Some(format!(
+                        "Theme '{}' not found; falling back to eza-dark",
+                        cfg_theme.trim()
+                    ));
+                }
                 ThemeName::EzaDark
-            },
-        );
-        let mut status_message = loaded.warning.map(|w| format!("Config warning: {w}"));
-        if theme_name == ThemeName::Custom && loaded.custom_theme.is_none() {
-            theme_name = ThemeName::EzaDark;
-            if status_message.is_none() {
-                status_message = Some("No theme.toml found; falling back to eza-dark".to_string());
             }
-        }
+        } else {
+            ThemeName::EzaDark
+        };
 
         let mut app = Self {
             current_dir: start_dir,
@@ -205,7 +243,8 @@ impl App {
             show_footer,
             max_rows,
             theme_name,
-            custom_theme: loaded.custom_theme,
+            custom_theme,
+            custom_theme_name,
             keybinds: loaded.keybinds,
             sort_field,
             sort_reverse,
@@ -238,6 +277,15 @@ impl App {
                 .unwrap_or_else(|| ThemeName::EzaDark.palette())
         } else {
             self.theme_name.palette()
+        }
+    }
+
+    /// Human-readable label for the active theme (using the custom filename stem when custom).
+    pub fn active_theme_label(&self) -> &str {
+        if self.theme_name == ThemeName::Custom {
+            self.custom_theme_name.as_deref().unwrap_or("custom")
+        } else {
+            self.theme_name.as_str()
         }
     }
 
@@ -798,7 +846,7 @@ impl App {
             // Themes & sorting
             NormalAction::CycleTheme => {
                 self.theme_name = self.theme_name.next(self.custom_theme.is_some());
-                self.status_message = Some(format!("Theme: {}", self.theme_name.as_str()));
+                self.status_message = Some(format!("Theme: {}", self.active_theme_label()));
                 AppAction::None
             }
             NormalAction::CycleSort => {
@@ -1689,27 +1737,44 @@ mod tests {
 
     #[test]
     fn config_precedence_and_custom_theme_default_and_cycle() {
-        use crate::config::ConfigFile;
+        use crate::config::load_from_dir;
         use ratatui::style::Color;
 
         let root = make_test_tree();
-        let custom = Theme::from_toml_str("accent = \"#123456\"").unwrap();
-        let loaded = LoadedConfig {
-            config: ConfigFile {
-                show_borders: Some(false),
-                show_footer: Some(false),
-                show_hidden: Some(true),
-                show_permissions: Some(true),
-                show_size: Some(false),
-                max_rows: Some(15),
-                ..ConfigFile::default()
-            },
-            custom_theme: Some(custom),
-            keybinds: Keybinds::default(),
-            warning: None,
-        };
+        let cfg_dir = make_test_tree();
+        fs::create_dir_all(cfg_dir.join("themes")).unwrap();
+        fs::write(
+            cfg_dir.join("config.toml"),
+            r#"
+show_borders = false
+show_footer = false
+show_hidden = true
+show_permissions = true
+show_size = false
+max_rows = 15
+theme = "catppuccin-mocha-mauve"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            cfg_dir.join("themes/catppuccin-mocha-mauve.toml"),
+            "accent = \"#123456\"\n",
+        )
+        .unwrap();
+        fs::write(
+            cfg_dir.join("themes/catppuccin.toml"),
+            "accent = \"#abcdef\"\n",
+        )
+        .unwrap();
+        fs::write(
+            cfg_dir.join("themes/cli-custom.toml"),
+            "accent = \"#654321\"\n",
+        )
+        .unwrap();
 
-        // Without CLI overrides: config wins and custom theme becomes default
+        let loaded = load_from_dir(&cfg_dir);
+
+        // Without CLI overrides: config wins and loads themes/catppuccin-mocha-mauve.toml
         let args = Args::try_parse_from(["lsi", root.to_str().unwrap()]).unwrap();
         let mut app = App::new_with_config(args, loaded.clone()).unwrap();
         assert!(!app.show_borders);
@@ -1719,7 +1784,9 @@ mod tests {
         assert!(!app.show_size);
         assert_eq!(app.max_rows, 15);
         assert_eq!(app.theme_name, ThemeName::Custom);
+        assert_eq!(app.active_theme_label(), "catppuccin-mocha-mauve");
         assert_eq!(app.theme().accent, Color::Rgb(0x12, 0x34, 0x56));
+        assert_eq!(app.theme().code_fg, ThemeName::EzaDark.palette().code_fg);
 
         // Cycling moves through built-in themes and back to Custom
         app.handle_key(KeyEvent::from(KeyCode::Char('T')));
@@ -1728,8 +1795,9 @@ mod tests {
             app.handle_key(KeyEvent::from(KeyCode::Char('T')));
         }
         assert_eq!(app.theme_name, ThemeName::Custom);
+        assert_eq!(app.active_theme_label(), "catppuccin-mocha-mauve");
 
-        // Explicit CLI flags override config.toml and theme.toml default
+        // Explicit CLI flags override config.toml (built-in and named custom from themes/)
         let cli_override = Args::try_parse_from([
             "lsi",
             "--borders",
@@ -1742,13 +1810,47 @@ mod tests {
             root.to_str().unwrap(),
         ])
         .unwrap();
-        let app_cli = App::new_with_config(cli_override, loaded).unwrap();
+        let app_cli = App::new_with_config(cli_override, loaded.clone()).unwrap();
         assert!(app_cli.show_borders);
         assert!(app_cli.show_footer);
         assert!(app_cli.show_size);
         assert_eq!(app_cli.theme_name, ThemeName::Nord);
         assert_eq!(app_cli.max_rows, 30);
 
+        let cli_custom = Args::try_parse_from([
+            "lsi",
+            "--theme",
+            "cli-custom",
+            root.to_str().unwrap(),
+        ])
+        .unwrap();
+        let app_cli_custom = App::new_with_config(cli_custom, loaded).unwrap();
+        assert_eq!(app_cli_custom.theme_name, ThemeName::Custom);
+        assert_eq!(app_cli_custom.active_theme_label(), "cli-custom");
+        assert_eq!(app_cli_custom.theme().accent, Color::Rgb(0x65, 0x43, 0x21));
+
+        // Built-in theme names ignore matching files in themes/ (catppuccin.toml is ignored)
+        fs::write(cfg_dir.join("config.toml"), "theme = \"catppuccin\"\n").unwrap();
+        let cat_loaded = load_from_dir(&cfg_dir);
+        let app_cat = App::new_with_config(
+            Args::try_parse_from(["lsi", root.to_str().unwrap()]).unwrap(),
+            cat_loaded,
+        )
+        .unwrap();
+        assert_eq!(app_cat.theme_name, ThemeName::Catppuccin);
+        assert_eq!(app_cat.theme().accent, ThemeName::Catppuccin.palette().accent);
+
+        // Missing custom theme falls back to eza-dark
+        fs::write(cfg_dir.join("config.toml"), "theme = \"nonexistent\"\n").unwrap();
+        let missing_loaded = load_from_dir(&cfg_dir);
+        let app_missing = App::new_with_config(
+            Args::try_parse_from(["lsi", root.to_str().unwrap()]).unwrap(),
+            missing_loaded,
+        )
+        .unwrap();
+        assert_eq!(app_missing.theme_name, ThemeName::EzaDark);
+
+        let _ = fs::remove_dir_all(&cfg_dir);
         let _ = fs::remove_dir_all(&root);
     }
 

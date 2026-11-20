@@ -3,8 +3,6 @@ use std::path::PathBuf;
 use clap::{Parser, ValueEnum};
 use serde::Deserialize;
 
-use crate::theme::ThemeName;
-
 /// Field used to sort directory entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -105,9 +103,9 @@ pub struct Args {
     #[arg(long = "no-footer", overrides_with = "footer")]
     pub no_footer: bool,
 
-    /// Initial color theme (overrides config.toml; defaults to custom if theme.toml exists, else eza-dark)
-    #[arg(long = "theme", value_enum)]
-    pub theme: Option<ThemeName>,
+    /// Initial color theme (built-in name or custom file in $HOME/.config/lsi/themes/<name>.toml; defaults to eza-dark)
+    #[arg(long = "theme", value_name = "THEME")]
+    pub theme: Option<String>,
 
     /// Initial sort field (overrides config.toml; defaults to name)
     #[arg(long = "sort", value_enum)]
@@ -262,12 +260,20 @@ mod tests {
         assert_eq!(args.show_icons_override(), Some(false));
         assert_eq!(args.show_borders_override(), Some(false));
         assert_eq!(args.show_footer_override(), Some(false));
-        assert_eq!(args.theme, Some(ThemeName::Catppuccin));
+        assert_eq!(args.theme, Some("catppuccin".to_string()));
         assert_eq!(args.sort, Some(SortField::Size));
         assert!(args.reverse);
         assert_eq!(args.dirs_first_override(), Some(false));
         assert!(args.preview);
         assert_eq!(args.path, Some(PathBuf::from("/tmp")));
+
+        let custom_theme_args =
+            Args::try_parse_from(["lsi", "--theme", "catppuccin-mocha-mauve"])
+                .expect("custom theme flag parses");
+        assert_eq!(
+            custom_theme_args.theme,
+            Some("catppuccin-mocha-mauve".to_string())
+        );
     }
 
     #[test]

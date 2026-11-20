@@ -1,9 +1,9 @@
 ---
-title: Theme Reference (theme.toml)
-description: Complete list of all 32 color keys, accepted formats, and defaults for $HOME/.config/lsi/theme.toml.
+title: Theme Reference (themes/*.toml)
+description: Complete list of all 32 color keys, accepted formats, and defaults for custom themes in $HOME/.config/lsi/themes/<name>.toml.
 ---
 
-When `$HOME/.config/lsi/theme.toml` exists, `lsi` registers it as the `custom` theme and selects it by default (while preserving all 7 built-in themes in the `T` / `c` cycle). Any omitted key inherits its value from `eza-dark`.
+Store custom palettes as `$HOME/.config/lsi/themes/<name>.toml` (for example `$HOME/.config/lsi/themes/my-theme.toml`) and activate them by setting `theme = "<name>"` in `$HOME/.config/lsi/config.toml` or passing `--theme <name>`. Files matching any of the 7 built-in theme names are ignored, and any omitted key inherits its value from `eza-dark`.
 
 ## Accepted Color Formats
 
@@ -74,7 +74,7 @@ When `$HOME/.config/lsi/theme.toml` exists, `lsi` registers it as the `custom` t
 ## Full Example
 
 ```toml
-# $HOME/.config/lsi/theme.toml
+# $HOME/.config/lsi/themes/my-theme.toml
 bg = "#10141a"
 fg = "#dce0e8"
 footer_bg = "#161b24"

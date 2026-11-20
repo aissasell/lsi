@@ -3,7 +3,7 @@ title: Configuration (config.toml)
 description: Reference for all options and aliases supported in $HOME/.config/lsi/config.toml.
 ---
 
-`lsi` reads optional startup defaults from `$HOME/.config/lsi/config.toml` (alongside [`theme.toml`](/lsi/reference/theme-toml/) for custom colors and [`keybinds.toml`](/lsi/reference/keybindings/) for custom keyboard shortcuts). Values set in `config.toml` take priority over hard-coded defaults, while explicit CLI flags override `config.toml`.
+`lsi` reads optional startup defaults from `$HOME/.config/lsi/config.toml` (alongside [`themes/*.toml`](/lsi/reference/theme-toml/) for named custom colors and [`keybinds.toml`](/lsi/reference/keybindings/) for custom keyboard shortcuts). Values set in `config.toml` take priority over hard-coded defaults, while explicit CLI flags override `config.toml`.
 
 If `config.toml` contains a syntax or type error, `lsi` falls back to defaults.
 
@@ -24,7 +24,7 @@ If `config.toml` contains a syntax or type error, `lsi` falls back to defaults.
 | `dirs_first` | | `true` \| `false` | `true` | Group directories before files when sorting |
 | `reverse` | `sort_reverse` | `true` \| `false` | `false` | Reverse sort order |
 | `sort` | `sort_field` | `"name"` \| `"size"` \| `"modified"` \| `"extension"` \| `"ext"` \| `"type"` | `"name"` | Field used to sort entries |
-| `theme` | | `"custom"` \| `"eza-dark"` \| `"catppuccin"` \| `"dracula"` \| `"nord"` \| `"gruvbox"` \| `"tokyo-night"` \| `"solarized-light"` | `"custom"` if `theme.toml` exists, else `"eza-dark"` | Initial color theme |
+| `theme` | | `"eza-dark"` \| `"catppuccin"` \| `"dracula"` \| `"nord"` \| `"gruvbox"` \| `"tokyo-night"` \| `"solarized-light"` \| any `<name>` matching `$HOME/.config/lsi/themes/<name>.toml` | `"eza-dark"` | Initial color theme (falls back to `"eza-dark"` if missing; built-in names ignore files in `themes/`) |
 | `max_rows` | `height` | integer (`>= 3`) | `20` | Maximum inline terminal rows used by the UI |
 
 ## Full Example
