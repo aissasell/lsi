@@ -5,10 +5,11 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, 
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, ClipboardMode, InputMode, PreviewData};
+use crate::app::{App, ClipboardMode, InputMode};
 use crate::fs_entry::{format_permissions, format_size, format_time, FileEntry};
 use crate::icons::{get_icon, IconCategory};
 use crate::keybinds::Keybinds;
+use crate::preview::PreviewData;
 use crate::theme::Theme;
 
 /// Renders the entire `lsi` interface for the current frame.
@@ -54,6 +55,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
             .split(body_area);
+        let inner_w = if show_borders {
+            body_chunks[1].width.saturating_sub(2)
+        } else {
+            body_chunks[1].width.saturating_sub(1)
+        };
+        let inner_h = if show_borders {
+            body_chunks[1].height.saturating_sub(2)
+        } else {
+            body_chunks[1].height
+        };
+        app.set_preview_area(inner_w, inner_h);
         render_table(frame, app, &theme, body_chunks[0], show_borders);
         render_preview(frame, app, &theme, body_chunks[1], show_borders);
     } else {
@@ -371,29 +383,45 @@ fn render_preview(
     area: Rect,
     show_borders: bool,
 ) {
-    let title = match app.selected_entry() {
-        Some(entry) => format!(" Preview: {} ", entry.name),
-        None => " Preview ".to_string(),
-    };
-
     let block = if show_borders {
         Block::default()
-            .title(title)
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.border))
             .style(Style::default().bg(theme.bg).fg(theme.fg))
     } else {
         Block::default()
-            .title(title)
             .borders(Borders::LEFT)
             .border_style(Style::default().fg(theme.border))
             .style(Style::default().bg(theme.bg).fg(theme.fg))
     };
 
+    #[cfg(feature = "image-preview")]
+    if let PreviewData::Image { protocol, .. } = &app.preview_data {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if protocol.needs_placeholder(inner).is_some() {
+            let notice = Paragraph::new(Line::from(Span::styled(
+                "Resizing image…",
+                Style::default().fg(theme.muted),
+            )));
+            frame.render_widget(notice, inner);
+        } else {
+            frame.render_widget(
+                ratatui_image::Image::new(protocol).allow_clipping(true),
+                inner,
+            );
+        }
+        return;
+    }
+
     let lines: Vec<Line> = match &app.preview_data {
         PreviewData::Empty => vec![Line::from(Span::styled(
-            "No item selected",
+            if app.should_show_preview_loading() {
+                "Loading preview…"
+            } else {
+                "No item selected"
+            },
             Style::default().fg(theme.muted),
         ))],
         PreviewData::Directory {
@@ -419,7 +447,9 @@ fn render_preview(
                 out
             }
         }
-        PreviewData::Text { lines, truncated } => {
+        PreviewData::Text {
+            lines, truncated, ..
+        } => {
             if lines.is_empty() {
                 vec![Line::from(Span::styled(
                     "(empty file)",
@@ -429,14 +459,20 @@ fn render_preview(
                 let mut out: Vec<Line> = lines
                     .iter()
                     .enumerate()
-                    .map(|(idx, line)| {
-                        Line::from(vec![
-                            Span::styled(
-                                format!("{:>3} ", idx + 1),
-                                Style::default().fg(theme.muted),
-                            ),
-                            Span::styled(line.clone(), Style::default().fg(theme.fg)),
-                        ])
+                    .map(|(idx, segments)| {
+                        let mut spans = Vec::with_capacity(segments.len() + 1);
+                        spans.push(Span::styled(
+                            format!("{:>3} ", idx + 1),
+                            Style::default().fg(theme.muted),
+                        ));
+                        for seg in segments {
+                            let mut style = Style::default().fg(seg.fg.unwrap_or(theme.fg));
+                            if !seg.modifiers.is_empty() {
+                                style = style.add_modifier(seg.modifiers);
+                            }
+                            spans.push(Span::styled(seg.text.clone(), style));
+                        }
+                        Line::from(spans)
                     })
                     .collect();
                 if *truncated {
@@ -448,9 +484,11 @@ fn render_preview(
                 out
             }
         }
-        PreviewData::Binary { size } => {
+        #[cfg(feature = "image-preview")]
+        PreviewData::Image { .. } => unreachable!("handled cleanly above"),
+        PreviewData::Binary { size, detail } => {
             let (num, unit) = format_size(*size, false);
-            vec![
+            let mut out = vec![
                 Line::from(Span::styled(
                     "Binary file",
                     Style::default()
@@ -461,7 +499,14 @@ fn render_preview(
                     format!("Size: {num}{unit} ({size} bytes)"),
                     Style::default().fg(theme.muted),
                 )),
-            ]
+            ];
+            if let Some(extra) = detail {
+                out.push(Line::from(Span::styled(
+                    extra.clone(),
+                    Style::default().fg(theme.code_fg),
+                )));
+            }
+            out
         }
         PreviewData::Error(msg) => vec![Line::from(Span::styled(
             msg.clone(),
@@ -471,7 +516,8 @@ fn render_preview(
 
     let preview = Paragraph::new(lines)
         .block(block)
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((app.preview_scroll, 0));
     frame.render_widget(preview, area);
 }
 
@@ -706,7 +752,7 @@ fn render_help_modal(frame: &mut Frame, theme: &Theme, kb: &Keybinds, area: Rect
     let modal_width = 72_u16
         .min(area.width.saturating_sub(4))
         .max(area.width.min(20));
-    let modal_height = 28_u16
+    let modal_height = 29_u16
         .min(area.height.saturating_sub(2))
         .max(area.height.min(6));
     let popup_area = centered_rect(modal_width, modal_height, area);
@@ -843,6 +889,14 @@ fn render_help_modal(frame: &mut Frame, theme: &Theme, kb: &Keybinds, area: Rect
             Keybinds::format_short(&kb.toggle_preview),
             "Toggle preview pane",
         ),
+        (
+            format!(
+                "{} / {}",
+                Keybinds::format_short(&kb.preview_scroll_down),
+                Keybinds::format_short(&kb.preview_scroll_up),
+            ),
+            "Scroll preview down / up",
+        ),
         (Keybinds::format_short(&kb.search), "Live filter entries"),
         (
             Keybinds::format_short(&kb.cancel),
@@ -938,12 +992,14 @@ mod tests {
         let backend = TestBackend::new(120, 35);
         let mut terminal = Terminal::new(backend).unwrap();
 
+        app.wait_for_preview_for_test(std::time::Duration::from_secs(2));
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         let buf_str = buffer_to_string(&terminal);
         assert!(buf_str.contains("Permissions"));
         assert!(buf_str.contains("Date Modified"));
         assert!(buf_str.contains("Cargo.toml"));
-        assert!(buf_str.contains("Preview:"));
+        assert!(!buf_str.contains("Preview:"));
+        assert!(buf_str.contains("main.rs"));
 
         app.handle_key(KeyEvent::from(KeyCode::Char('?')));
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -1152,6 +1208,61 @@ toggle_help = "F1"
         let help_out = buffer_to_string(&terminal);
         assert!(help_out.contains("F2"));
         assert!(help_out.contains("F1"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn renders_highlighted_text_and_image_preview_without_panicking() {
+        let base =
+            std::env::temp_dir().join(format!("lsi_real_preview_ui_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        fs::write(
+            base.join("demo.rs"),
+            "pub fn hello() -> &'static str {\n    \"world\"\n}\n",
+        )
+        .unwrap();
+
+        #[cfg(feature = "image-preview")]
+        {
+            let img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
+                image::ImageBuffer::from_pixel(16, 12, image::Rgba([20, 180, 90, 255]));
+            img.save(base.join("sample.png")).unwrap();
+        }
+
+        let args = Args::try_parse_from(["lsi", "--preview", base.to_str().unwrap()]).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
+
+        let backend = TestBackend::new(120, 25);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // First draw sets preview area while worker loads demo.rs
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        app.wait_for_preview_for_test(std::time::Duration::from_secs(2));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let code_out = buffer_to_string(&terminal);
+        assert!(!code_out.contains("Preview:"));
+        assert!(code_out.contains("hello"));
+
+        #[cfg(feature = "image-preview")]
+        {
+            app.move_selection(1);
+            assert_eq!(app.selected_entry().unwrap().name, "sample.png");
+            app.wait_for_preview_for_test(std::time::Duration::from_secs(2));
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let img_out = buffer_to_string(&terminal);
+            assert!(img_out.contains("sample.png"));
+            assert!(!img_out.contains("Preview:"));
+            assert!(matches!(
+                app.preview_data,
+                PreviewData::Image {
+                    width: 16,
+                    height: 12,
+                    ..
+                }
+            ));
+        }
 
         let _ = fs::remove_dir_all(&base);
     }

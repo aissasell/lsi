@@ -80,6 +80,8 @@ Create `$HOME/.config/lsi/keybinds.toml` and override only the actions you want 
 | `toggle_borders` | `B` | Toggle borders around table and preview panes |
 | `toggle_footer` | `F` | Toggle footer status and keybind hint bar |
 | `toggle_preview` | `v` / `Tab` | Toggle side-by-side preview pane |
+| `preview_scroll_down` | `J` / `Alt+Down` | Scroll preview pane down |
+| `preview_scroll_up` | `K` / `Alt+Up` | Scroll preview pane up |
 
 ## Sorting & Themes
 
@@ -155,6 +157,8 @@ toggle_long = "L"
 toggle_borders = "B"
 toggle_footer = "F"
 toggle_preview = ["v", "Tab"]
+preview_scroll_down = ["J", "Alt+Down"]
+preview_scroll_up = ["K", "Alt+Up"]
 
 # Sorting & Themes
 cycle_theme = ["T", "c"]

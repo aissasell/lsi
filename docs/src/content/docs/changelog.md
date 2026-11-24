@@ -5,6 +5,16 @@ description: Release history and notable changes for lsi.
 
 All notable changes to `lsi` are documented on this page.
 
+## [Unreleased]
+
+### Added
+
+- **Real file previews (`src/preview.rs`)**:
+  - **Syntax highlighting**: Pure-Rust `syntect` (`default-fancy`) highlighting with lazy `OnceLock` initialization, extension/filename/shebang detection, active light/dark theme matching, and a `1000`-char line-length guard to avoid regex backtracking stalls on minified files.
+  - **Terminal image previews**: `ratatui-image` + pruned pure-Rust `image` (`png`, `jpeg`, `gif`, `webp`, `bmp`, `ico`) supporting Kitty Graphics Protocol, iTerm2 inline images, Sixel, and Unicode half-blocks, with lazy stdio protocol probing, fast `Triangle` downscaling, `20 MiB` / `100 MP` decode limits, and Kitty overlay cleanup in `Viewport::Inline`.
+  - **Asynchronous preview worker & LRU cache**: Dedicated `std::thread` + `mpsc` worker with request coalescing, `35 ms` image debounce, bounded 24-entry `lru::LruCache`, and conditional `event::poll` while loading (`0%` idle CPU).
+  - **Preview scrolling & config/feature controls**: Scroll text/directory previews with `J` / `Alt+Down` and `K` / `Alt+Up` (`preview_scroll_down` / `preview_scroll_up` in `keybinds.toml`), configure `syntax_highlight`, `image_preview`, `image_protocol`, and `preview_max_file_mb` in `config.toml`, and optionally disable default features via Cargo `--no-default-features` (`syntax-highlight`, `image-preview`).
+
 ## [1.2] — 2026-11-20
 
 ### Added

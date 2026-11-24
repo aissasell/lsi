@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use crate::cli::SortField;
 use crate::keybinds::Keybinds;
+use crate::preview::ImageProtocol;
 use crate::theme::{Theme, ThemeName};
 
 /// User configuration loaded from `$HOME/.config/lsi/config.toml`.
@@ -30,6 +31,10 @@ pub struct ConfigFile {
     pub show_icons: Option<bool>,
     #[serde(alias = "preview")]
     pub show_preview: Option<bool>,
+    pub syntax_highlight: Option<bool>,
+    pub image_preview: Option<bool>,
+    pub image_protocol: Option<ImageProtocol>,
+    pub preview_max_file_mb: Option<u64>,
     pub dirs_first: Option<bool>,
     #[serde(alias = "sort_reverse")]
     pub reverse: Option<bool>,
@@ -234,6 +239,10 @@ show_time = true
 show_size = false
 show_icons = false
 show_preview = true
+syntax_highlight = false
+image_preview = false
+image_protocol = "halfblocks"
+preview_max_file_mb = 12
 dirs_first = false
 reverse = true
 sort = "modified"
@@ -276,6 +285,13 @@ quit_cd = ["q", "Ctrl+w"]
         assert_eq!(loaded.config.show_size, Some(false));
         assert_eq!(loaded.config.show_icons, Some(false));
         assert_eq!(loaded.config.show_preview, Some(true));
+        assert_eq!(loaded.config.syntax_highlight, Some(false));
+        assert_eq!(loaded.config.image_preview, Some(false));
+        assert_eq!(
+            loaded.config.image_protocol,
+            Some(ImageProtocol::Halfblocks)
+        );
+        assert_eq!(loaded.config.preview_max_file_mb, Some(12));
         assert_eq!(loaded.config.dirs_first, Some(false));
         assert_eq!(loaded.config.reverse, Some(true));
         assert_eq!(loaded.config.sort, Some(SortField::Modified));

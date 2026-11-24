@@ -17,7 +17,7 @@
 - **Interactive Tree & History Navigation**: Step into folders, climb up to parent directories (keeping the exited folder selected), and move back/forward through your navigation history.
 - **File Manipulation, Creation & Renaming**: Multi-select with `Space`, copy (`y`), cut (`x`), paste (`p`), Trash (`Delete`) or permanently delete (`Shift+Delete`), create new files/folders (`a`, ending with `/` for directories), and rename inline with full name & extension editing (`r`).
 - **In-Terminal Editor Integration**: Pressing `Enter` or `l` on a text file suspends the inline UI and opens it directly in `$VISUAL` / `$EDITOR` (e.g., `nvim`) inside the current terminal, returning smoothly when you exit. Binary/media files open via the system opener (or press `O` explicitly).
-- **Side-by-Side Preview Pane**: Toggle a live preview pane (`v` or `Tab`) for text files and directory contents.
+- **Side-by-Side Preview Pane**: Toggle an asynchronous preview pane (`v` or `Tab`, scroll with `J`/`K` or `Alt+Down`/`Alt+Up`) with pure-Rust `syntect` syntax highlighting, inline image previews (Kitty Graphics, iTerm2, Sixel, or Unicode half-blocks), and directory previews.
 - **Live Search & Sorting**: Filter entries in real time with `/`, and sort by name, size, modified time, extension, or type.
 - **Customizable Color Themes & Keybindings**: Switch between 7 built-in color themes or named custom themes in `$HOME/.config/lsi/themes/<name>.toml`, and remap or unbind every keyboard action in `$HOME/.config/lsi/keybinds.toml`.
 
@@ -32,6 +32,12 @@ Build and install using cargo:
 
 ```bash
 cargo install --git https://github.com/aissasell/lsi.git
+```
+
+To build a minimal binary without syntax highlighting or image decoding:
+
+```bash
+cargo install --git https://github.com/aissasell/lsi.git --no-default-features
 ```
 
 ## Usage
@@ -126,6 +132,7 @@ Every keyboard action can be remapped (or unbound with `[]`) in `$HOME/.config/l
 | `R` | Toggle reverse sort order |
 | `d` | Toggle directories-first grouping |
 | `v` / `Tab` | Toggle side-by-side preview pane |
+| `J` / `Alt+Down`, `K` / `Alt+Up` | Scroll preview pane down / up |
 | `/` | Activate live filter (`Enter` to lock filter, `Esc` to clear) |
 | `Esc` | Cancel active selection, clear active filter, or exit without changing directory |
 | `?` | Toggle help overlay |
@@ -184,6 +191,10 @@ show_time = false
 show_size = true
 show_icons = true
 show_preview = false
+syntax_highlight = true
+image_preview = true
+image_protocol = "auto" # auto, kitty, sixel, iterm2, halfblocks, off
+preview_max_file_mb = 20
 dirs_first = true
 reverse = false
 sort = "name"        # name, size, modified, extension (or ext), type

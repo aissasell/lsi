@@ -55,7 +55,7 @@ All launch flags can also be toggled live while browsing:
 
 ## Side-by-Side Preview & Live Search
 
-- **Preview pane (`v` or `Tab`)**: Splits the inline area (`60%` table / `40%` preview when width `>= 60`) to show either a mini icon-annotated listing of a selected directory's children or the first 100 lines / 32 KiB of a text file (binary files display their size summary).
+- **Preview pane (`v` or `Tab`)**: Splits the inline area (`60%` table / `40%` preview when width `>= 60`) to asynchronously display an icon-annotated directory listing, up to 200 lines / 64 KiB of syntax-highlighted text (`syntect`, guarded against minified files), or inline image previews (Kitty Graphics, iTerm2, Sixel, or Unicode half-blocks via `ratatui-image`). Use `J` / `Alt+Down` and `K` / `Alt+Up` to scroll long text or directory previews.
 - **Live filter (`/`)**: Enters search mode and filters entries in real time by case-insensitive substring match:
   - Press `Enter` to lock the filter and resume navigating the filtered results.
   - Press `Esc` to clear the filter and return to normal navigation.

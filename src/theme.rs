@@ -531,6 +531,15 @@ fn resolve_opt_color(spec: Option<ColorSpec>, default: Color) -> Result<Color> {
 }
 
 impl Theme {
+    /// Returns `true` when the palette background has light luminance.
+    pub const fn is_light(&self) -> bool {
+        match self.bg {
+            Color::Rgb(r, g, b) => (r as u16 * 299 + g as u16 * 587 + b as u16 * 114) / 1000 > 140,
+            Color::White | Color::Gray | Color::LightYellow | Color::LightCyan => true,
+            _ => false,
+        }
+    }
+
     /// Parses a custom theme from TOML content, merging omitted colors from `eza-dark`.
     pub fn from_toml_str(content: &str) -> Result<Self> {
         let cfg: ThemeConfig = toml::from_str(content).context("Failed to parse theme file")?;

@@ -5,12 +5,14 @@ mod fs_entry;
 mod fs_ops;
 mod icons;
 mod keybinds;
+mod preview;
 mod theme;
 mod ui;
 
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
@@ -26,6 +28,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 
 use crate::app::{App, AppAction};
 use crate::cli::Args;
+use crate::preview::clear_terminal_graphics;
 
 type InlineTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -58,8 +61,18 @@ fn run_event_loop(app: &mut App) -> Result<bool> {
     let mut terminal = init_inline_terminal(current_height)?;
 
     loop {
+        app.ensure_image_picker_ready();
+        let _ = app.poll_preview_results();
+        if app.take_pending_graphics_clear() {
+            clear_terminal_graphics(&mut io::stdout(), app.uses_kitty_graphics())?;
+        }
+
         let target_height = app.desired_inline_height();
         if target_height != current_height {
+            if app.uses_kitty_graphics() {
+                clear_terminal_graphics(&mut io::stdout(), true)?;
+                app.handle_graphics_cleared();
+            }
             let origin = terminal.get_frame().area().as_position();
             terminal.clear()?;
             terminal.set_cursor_position(origin)?;
@@ -69,13 +82,24 @@ fn run_event_loop(app: &mut App) -> Result<bool> {
 
         terminal.draw(|frame| ui::draw(frame, app))?;
 
+        if app.preview_in_flight && !event::poll(Duration::from_millis(16))? {
+            continue;
+        }
+
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => match app.handle_key(key) {
                 AppAction::Quit { change_dir } => {
+                    if app.uses_kitty_graphics() {
+                        clear_terminal_graphics(&mut io::stdout(), true)?;
+                    }
                     finalize_inline_exit(&mut terminal)?;
                     return Ok(change_dir);
                 }
                 AppAction::OpenEditor(path) => {
+                    if app.uses_kitty_graphics() {
+                        clear_terminal_graphics(&mut io::stdout(), true)?;
+                        app.handle_graphics_cleared();
+                    }
                     let origin = terminal.get_frame().area().as_position();
                     terminal.clear()?;
                     terminal.set_cursor_position(origin)?;

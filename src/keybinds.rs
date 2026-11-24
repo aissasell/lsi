@@ -215,6 +215,8 @@ pub enum NormalAction {
     ToggleBorders,
     ToggleFooter,
     TogglePreview,
+    PreviewScrollDown,
+    PreviewScrollUp,
     CycleTheme,
     CycleSort,
     ToggleReverseSort,
@@ -275,6 +277,8 @@ pub struct Keybinds {
     pub toggle_borders: Vec<KeyCombo>,
     pub toggle_footer: Vec<KeyCombo>,
     pub toggle_preview: Vec<KeyCombo>,
+    pub preview_scroll_down: Vec<KeyCombo>,
+    pub preview_scroll_up: Vec<KeyCombo>,
 
     // Sorting & Themes
     pub cycle_theme: Vec<KeyCombo>,
@@ -338,6 +342,8 @@ impl Default for Keybinds {
             toggle_borders: parse_defaults(&["B"]),
             toggle_footer: parse_defaults(&["F"]),
             toggle_preview: parse_defaults(&["v", "Tab"]),
+            preview_scroll_down: parse_defaults(&["J", "Alt+Down"]),
+            preview_scroll_up: parse_defaults(&["K", "Alt+Up"]),
 
             cycle_theme: parse_defaults(&["T", "c"]),
             cycle_sort: parse_defaults(&["s"]),
@@ -408,6 +414,8 @@ struct KeybindsConfig {
     toggle_borders: Option<KeySpecList>,
     toggle_footer: Option<KeySpecList>,
     toggle_preview: Option<KeySpecList>,
+    preview_scroll_down: Option<KeySpecList>,
+    preview_scroll_up: Option<KeySpecList>,
 
     cycle_theme: Option<KeySpecList>,
     cycle_sort: Option<KeySpecList>,
@@ -498,6 +506,10 @@ impl Keybinds {
             resolve_field(cfg.toggle_footer, defaults.toggle_footer)?;
         let (mut toggle_preview, o_toggle_preview) =
             resolve_field(cfg.toggle_preview, defaults.toggle_preview)?;
+        let (mut preview_scroll_down, o_preview_scroll_down) =
+            resolve_field(cfg.preview_scroll_down, defaults.preview_scroll_down)?;
+        let (mut preview_scroll_up, o_preview_scroll_up) =
+            resolve_field(cfg.preview_scroll_up, defaults.preview_scroll_up)?;
 
         let (mut cycle_theme, o_cycle_theme) =
             resolve_field(cfg.cycle_theme, defaults.cycle_theme)?;
@@ -554,6 +566,8 @@ impl Keybinds {
             (&mut toggle_borders, o_toggle_borders),
             (&mut toggle_footer, o_toggle_footer),
             (&mut toggle_preview, o_toggle_preview),
+            (&mut preview_scroll_down, o_preview_scroll_down),
+            (&mut preview_scroll_up, o_preview_scroll_up),
             (&mut cycle_theme, o_cycle_theme),
             (&mut cycle_sort, o_cycle_sort),
             (&mut toggle_reverse_sort, o_toggle_reverse_sort),
@@ -626,6 +640,8 @@ impl Keybinds {
             toggle_borders,
             toggle_footer,
             toggle_preview,
+            preview_scroll_down,
+            preview_scroll_up,
             cycle_theme,
             cycle_sort,
             toggle_reverse_sort,
@@ -688,7 +704,7 @@ impl Keybinds {
             .unwrap_or_else(|| "-".to_string())
     }
 
-    fn normal_bindings(&self) -> [(&[KeyCombo], NormalAction); 41] {
+    fn normal_bindings(&self) -> [(&[KeyCombo], NormalAction); 43] {
         [
             (&self.quit_cd, NormalAction::QuitCd),
             (&self.quit, NormalAction::Quit),
@@ -728,6 +744,8 @@ impl Keybinds {
             (&self.toggle_reverse_sort, NormalAction::ToggleReverseSort),
             (&self.toggle_dirs_first, NormalAction::ToggleDirsFirst),
             (&self.toggle_preview, NormalAction::TogglePreview),
+            (&self.preview_scroll_down, NormalAction::PreviewScrollDown),
+            (&self.preview_scroll_up, NormalAction::PreviewScrollUp),
             (&self.search, NormalAction::Search),
             (&self.cancel, NormalAction::Cancel),
             (&self.toggle_help, NormalAction::ToggleHelp),
@@ -944,6 +962,8 @@ toggle_long = "L"
 toggle_borders = "B"
 toggle_footer = "F"
 toggle_preview = ["v", "Tab"]
+preview_scroll_down = ["J", "Alt+Down"]
+preview_scroll_up = ["K", "Alt+Up"]
 
 cycle_theme = ["T", "c"]
 cycle_sort = "s"

@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -13,11 +15,13 @@ use crate::config::{load_named_theme, load_user_config, LoadedConfig, ThemeLoadO
 use crate::fs_entry::{current_uid, read_directory_with_cache, FileEntry, IdentityCache};
 use crate::fs_ops;
 use crate::keybinds::{Keybinds, NormalAction};
+#[cfg(feature = "image-preview")]
+use crate::preview::is_image_extension;
+use crate::preview::{
+    create_image_picker, picker_uses_kitty, ImagePickerHandle, ImageProtocol, PreviewConfig,
+    PreviewData, PreviewRequest, PreviewWorker,
+};
 use crate::theme::{Theme, ThemeName};
-
-const PREVIEW_MAX_LINES: usize = 100;
-const PREVIEW_MAX_BYTES: usize = 32 * 1024;
-const PREVIEW_DIR_LIMIT: usize = 100;
 
 fn char_to_byte_idx(s: &str, char_idx: usize) -> usize {
     s.char_indices()
@@ -64,24 +68,6 @@ pub enum AppAction {
 pub struct HistoryItem {
     pub dir: PathBuf,
     pub selected_name: Option<String>,
-}
-
-/// Cached content for the side-by-side preview pane.
-#[derive(Debug, Clone)]
-pub enum PreviewData {
-    Empty,
-    Directory {
-        entries: Vec<FileEntry>,
-        total_count: usize,
-    },
-    Text {
-        lines: Vec<String>,
-        truncated: bool,
-    },
-    Binary {
-        size: u64,
-    },
-    Error(String),
 }
 
 /// Application state for the interactive `lsi` explorer.
@@ -132,6 +118,17 @@ pub struct App {
 
     preview_path: Option<PathBuf>,
     pub preview_data: PreviewData,
+    pub preview_config: PreviewConfig,
+    pub preview_scroll: u16,
+    preview_area: (u16, u16),
+    preview_req_id: u64,
+    pub preview_in_flight: bool,
+    preview_started_at: Option<Instant>,
+    preview_worker: Option<PreviewWorker>,
+    image_picker: Option<Arc<ImagePickerHandle>>,
+    image_picker_probed: bool,
+    uses_kitty_graphics: bool,
+    pending_graphics_clear: bool,
 }
 
 impl App {
@@ -224,6 +221,24 @@ impl App {
             ThemeName::EzaDark
         };
 
+        let preview_config = PreviewConfig {
+            syntax_highlight: cfg.syntax_highlight.unwrap_or(true),
+            image_preview: cfg.image_preview.unwrap_or(true),
+            image_protocol: cfg.image_protocol.unwrap_or(ImageProtocol::Auto),
+            max_file_bytes: cfg
+                .preview_max_file_mb
+                .unwrap_or(20)
+                .max(1)
+                .saturating_mul(1024 * 1024),
+        };
+        let initial_picker = if preview_config.image_preview
+            && preview_config.image_protocol != ImageProtocol::Off
+        {
+            create_image_picker(ImageProtocol::Halfblocks, false).map(Arc::new)
+        } else {
+            None
+        };
+
         let mut app = Self {
             current_dir: start_dir,
             all_entries: Vec::new(),
@@ -264,6 +279,17 @@ impl App {
             identity_cache: IdentityCache::new(),
             preview_path: None,
             preview_data: PreviewData::Empty,
+            preview_config,
+            preview_scroll: 0,
+            preview_area: (40, 18),
+            preview_req_id: 0,
+            preview_in_flight: false,
+            preview_started_at: None,
+            preview_worker: None,
+            image_picker: initial_picker,
+            image_picker_probed: false,
+            uses_kitty_graphics: false,
+            pending_graphics_clear: false,
         };
 
         app.load_directory(initial_select.as_deref())?;
@@ -847,6 +873,9 @@ impl App {
             NormalAction::CycleTheme => {
                 self.theme_name = self.theme_name.next(self.custom_theme.is_some());
                 self.status_message = Some(format!("Theme: {}", self.active_theme_label()));
+                if self.show_preview {
+                    self.update_preview(true);
+                }
                 AppAction::None
             }
             NormalAction::CycleSort => {
@@ -881,7 +910,28 @@ impl App {
             // Preview, search, help
             NormalAction::TogglePreview => {
                 self.show_preview = !self.show_preview;
-                self.update_preview(true);
+                if self.show_preview {
+                    self.preview_scroll = 0;
+                    self.update_preview(true);
+                } else {
+                    self.preview_path = None;
+                    self.preview_data = PreviewData::Empty;
+                    self.preview_scroll = 0;
+                    self.preview_in_flight = false;
+                    self.preview_started_at = None;
+                    if self.uses_kitty_graphics {
+                        self.pending_graphics_clear = true;
+                        self.clear_preview_cache();
+                    }
+                }
+                AppAction::None
+            }
+            NormalAction::PreviewScrollDown => {
+                self.scroll_preview(3);
+                AppAction::None
+            }
+            NormalAction::PreviewScrollUp => {
+                self.scroll_preview(-3);
                 AppAction::None
             }
             NormalAction::Search => {
@@ -1365,7 +1415,109 @@ impl App {
         Ok(())
     }
 
-    /// Recomputes cached preview data if `show_preview` is enabled and target changed or forced.
+    /// Lazily probes terminal image protocol capabilities once on a live TTY when preview opens.
+    pub fn ensure_image_picker_ready(&mut self) {
+        if !self.show_preview
+            || self.image_picker_probed
+            || !self.preview_config.image_preview
+            || self.preview_config.image_protocol == ImageProtocol::Off
+        {
+            return;
+        }
+        self.image_picker_probed = true;
+        let probed = create_image_picker(self.preview_config.image_protocol, true).map(Arc::new);
+        self.uses_kitty_graphics = probed.as_deref().is_some_and(picker_uses_kitty);
+        self.image_picker = probed.clone();
+        if let Some(ref worker) = self.preview_worker {
+            worker.update_picker(probed);
+            self.update_preview(true);
+        }
+    }
+
+    /// Returns whether the active terminal image protocol uses Kitty graphics overlays.
+    pub const fn uses_kitty_graphics(&self) -> bool {
+        self.uses_kitty_graphics
+    }
+
+    /// Returns `true` once when Kitty graphics overlays should be deleted from stdout.
+    pub fn take_pending_graphics_clear(&mut self) -> bool {
+        std::mem::take(&mut self.pending_graphics_clear)
+    }
+
+    /// Clears the background worker's preview cache (for example after clearing Kitty placements).
+    pub fn clear_preview_cache(&mut self) {
+        if let Some(ref worker) = self.preview_worker {
+            worker.clear_cache();
+        }
+    }
+
+    /// Clears cached preview graphics after terminal image storage has been purged (e.g., Kitty `d=A`).
+    pub fn handle_graphics_cleared(&mut self) {
+        self.clear_preview_cache();
+        #[cfg(feature = "image-preview")]
+        if matches!(self.preview_data, PreviewData::Image { .. }) {
+            self.preview_data = PreviewData::Empty;
+            if self.show_preview {
+                self.update_preview(true);
+            }
+        }
+    }
+
+    /// Records the preview inner dimensions and refreshes image scaling when resized.
+    pub fn set_preview_area(&mut self, width: u16, height: u16) {
+        let next = (width.max(1), height.max(1));
+        if self.preview_area == next {
+            return;
+        }
+        self.preview_area = next;
+        #[cfg(feature = "image-preview")]
+        if self.show_preview
+            && (matches!(self.preview_data, PreviewData::Image { .. })
+                || (self.preview_in_flight
+                    && self
+                        .selected_entry()
+                        .is_some_and(|e| !e.is_dir && is_image_extension(&e.extension))))
+        {
+            self.update_preview(true);
+        }
+    }
+
+    /// Returns `true` when an async preview build has been pending long enough to show a notice.
+    pub fn should_show_preview_loading(&self) -> bool {
+        self.preview_in_flight
+            && self
+                .preview_started_at
+                .is_some_and(|started| started.elapsed() >= Duration::from_millis(30))
+    }
+
+    /// Scrolls text or directory preview content vertically by `delta` rows.
+    pub fn scroll_preview(&mut self, delta: i32) {
+        if !self.show_preview {
+            return;
+        }
+        let total_lines = match &self.preview_data {
+            PreviewData::Text {
+                lines, truncated, ..
+            } => lines.len() + usize::from(*truncated),
+            PreviewData::Directory {
+                entries,
+                total_count,
+            } => entries.len() + usize::from(*total_count > entries.len()),
+            _ => 0,
+        };
+        let visible_rows = usize::from(self.preview_area.1.max(1));
+        let max_scroll =
+            u16::try_from(total_lines.saturating_sub(visible_rows)).unwrap_or(u16::MAX);
+        if delta >= 0 {
+            let step = u16::try_from(delta).unwrap_or(u16::MAX);
+            self.preview_scroll = self.preview_scroll.saturating_add(step).min(max_scroll);
+        } else {
+            let step = u16::try_from(delta.saturating_abs()).unwrap_or(u16::MAX);
+            self.preview_scroll = self.preview_scroll.saturating_sub(step);
+        }
+    }
+
+    /// Dispatches an asynchronous preview update if `show_preview` is enabled and target changed or forced.
     pub fn update_preview(&mut self, force: bool) {
         if !self.show_preview {
             return;
@@ -1373,77 +1525,71 @@ impl App {
         let Some(selected) = self.selected_entry().cloned() else {
             self.preview_path = None;
             self.preview_data = PreviewData::Empty;
+            self.preview_scroll = 0;
+            self.preview_in_flight = false;
+            self.preview_started_at = None;
             return;
         };
 
-        if !force && self.preview_path.as_ref() == Some(&selected.path) {
+        let same_path = self.preview_path.as_ref() == Some(&selected.path);
+        if !force && same_path {
             return;
+        }
+        if !same_path {
+            self.preview_scroll = 0;
         }
 
         self.preview_path = Some(selected.path.clone());
-        self.preview_data = build_preview(&selected, &mut self.identity_cache, self.show_hidden);
-    }
-}
+        self.preview_req_id = self.preview_req_id.wrapping_add(1);
+        self.preview_in_flight = true;
+        self.preview_started_at = Some(Instant::now());
 
-fn build_preview(entry: &FileEntry, cache: &mut IdentityCache, show_hidden: bool) -> PreviewData {
-    if entry.symlink_broken {
-        return PreviewData::Error(format!(
-            "Broken symlink -> {}",
-            entry
-                .symlink_target
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "?".to_string())
-        ));
-    }
-
-    if entry.is_dir {
-        return match read_directory_with_cache(&entry.path, cache) {
-            Ok(mut children) => {
-                if !show_hidden {
-                    children.retain(|c| !c.is_hidden);
-                }
-                sort_entries(&mut children, SortField::Name, false, true);
-                let total_count = children.len();
-                children.truncate(PREVIEW_DIR_LIMIT);
-                PreviewData::Directory {
-                    entries: children,
-                    total_count,
-                }
-            }
-            Err(err) => PreviewData::Error(err.to_string()),
-        };
-    }
-
-    let mut file = match File::open(&entry.path) {
-        Ok(f) => f,
-        Err(err) => return PreviewData::Error(format!("Cannot read file: {err}")),
-    };
-
-    let mut buf = vec![0_u8; PREVIEW_MAX_BYTES];
-    let n = match file.read(&mut buf) {
-        Ok(n) => n,
-        Err(err) => return PreviewData::Error(format!("Read error: {err}")),
-    };
-    buf.truncate(n);
-
-    let probe_len = buf.len().min(1024);
-    if buf[..probe_len].contains(&0) {
-        return PreviewData::Binary { size: entry.size };
-    }
-
-    let text = String::from_utf8_lossy(&buf);
-    let mut lines = Vec::new();
-    let mut truncated = entry.size as usize > n;
-    for line in text.lines() {
-        if lines.len() >= PREVIEW_MAX_LINES {
-            truncated = true;
-            break;
+        if self.preview_worker.is_none() {
+            self.preview_worker = Some(PreviewWorker::spawn(self.image_picker.clone()));
         }
-        lines.push(line.replace('\t', "    "));
+
+        if let Some(ref worker) = self.preview_worker {
+            worker.send_request(PreviewRequest {
+                req_id: self.preview_req_id,
+                entry: selected,
+                pane_size: self.preview_area,
+                show_hidden: self.show_hidden,
+                is_light_theme: self.theme().is_light(),
+                config: self.preview_config.clone(),
+            });
+        }
     }
 
-    PreviewData::Text { lines, truncated }
+    /// Drains completed responses from the background preview worker, returning `true` if updated.
+    pub fn poll_preview_results(&mut self) -> bool {
+        let Some(ref worker) = self.preview_worker else {
+            return false;
+        };
+        let mut updated = false;
+        while let Ok(resp) = worker.try_recv() {
+            if resp.req_id != self.preview_req_id {
+                continue;
+            }
+            if self.preview_path.as_ref() == Some(&resp.path) {
+                self.preview_data = resp.data;
+                self.preview_in_flight = false;
+                self.preview_started_at = None;
+                updated = true;
+            }
+        }
+        updated
+    }
+
+    #[cfg(test)]
+    pub fn wait_for_preview_for_test(&mut self, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        while self.preview_in_flight && Instant::now() < deadline {
+            if self.poll_preview_results() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
 }
 
 fn is_likely_text_file(path: &Path) -> bool {
@@ -1483,7 +1629,12 @@ fn resolve_initial_path(arg_path: Option<&Path>) -> Result<(PathBuf, Option<Stri
     }
 }
 
-fn sort_entries(entries: &mut [FileEntry], field: SortField, reverse: bool, dirs_first: bool) {
+pub(crate) fn sort_entries(
+    entries: &mut [FileEntry],
+    field: SortField,
+    reverse: bool,
+    dirs_first: bool,
+) {
     entries.sort_by(|a, b| {
         if dirs_first && a.is_dir != b.is_dir {
             return if a.is_dir {
@@ -2236,6 +2387,103 @@ rename_clear = "Ctrl+k"
         app.handle_key(KeyEvent::from(KeyCode::Char('d')));
         assert_eq!(app.input_mode, InputMode::Normal);
         assert!(!root.join("main.rs").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn async_preview_worker_loads_and_scrolls_and_clears_stale_state() {
+        let root = make_test_tree();
+        let mut long_code = String::new();
+        for idx in 1..=60 {
+            long_code.push_str(&format!("let v_{idx} = {idx};\n"));
+        }
+        fs::write(root.join("long.rs"), long_code).unwrap();
+
+        let args = Args::try_parse_from(["lsi", "--preview", root.to_str().unwrap()]).unwrap();
+        let mut app = App::new_with_config(args, LoadedConfig::default()).unwrap();
+        app.set_preview_area(40, 10);
+
+        // Initial selection is alpha_dir
+        app.wait_for_preview_for_test(Duration::from_secs(2));
+        assert!(!app.preview_in_flight);
+        assert!(matches!(app.preview_data, PreviewData::Directory { .. }));
+
+        // Move to long.rs (visible: alpha_dir, beta_dir, long.rs, main.rs)
+        app.move_selection(2);
+        assert_eq!(app.selected_entry().unwrap().name, "long.rs");
+        app.wait_for_preview_for_test(Duration::from_secs(2));
+        match &app.preview_data {
+            PreviewData::Text {
+                lines, truncated, ..
+            } => {
+                assert!(!truncated);
+                assert_eq!(lines.len(), 60);
+            }
+            other => panic!("expected Text preview for long.rs, got {other:?}"),
+        }
+
+        // Scroll preview down and up via 'J' / 'K'
+        app.handle_key(KeyEvent::from(KeyCode::Char('J')));
+        assert_eq!(app.preview_scroll, 3);
+        app.handle_key(KeyEvent::from(KeyCode::Char('K')));
+        assert_eq!(app.preview_scroll, 0);
+
+        // Scrolling down clamps cleanly and resets when moving selection
+        for _ in 0..30 {
+            app.handle_key(KeyEvent::from(KeyCode::Char('J')));
+        }
+        assert_eq!(app.preview_scroll, 50);
+        app.move_selection(1); // main.rs
+        assert_eq!(app.preview_scroll, 0);
+        app.wait_for_preview_for_test(Duration::from_secs(2));
+
+        // Toggling preview off clears preview_path and preview_data immediately
+        app.handle_key(KeyEvent::from(KeyCode::Char('v')));
+        assert!(!app.show_preview);
+        assert!(app.preview_path.is_none());
+        assert!(matches!(app.preview_data, PreviewData::Empty));
+        assert_eq!(app.preview_scroll, 0);
+
+        #[cfg(feature = "image-preview")]
+        {
+            let img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
+                image::ImageBuffer::from_pixel(64, 64, image::Rgba([20, 180, 90, 255]));
+            img.save(root.join("photo.png")).unwrap();
+            app.load_directory(Some("photo.png")).unwrap();
+            assert_eq!(app.selected_entry().unwrap().name, "photo.png");
+
+            app.set_preview_area(40, 18);
+            app.handle_key(KeyEvent::from(KeyCode::Char('v')));
+            assert!(app.show_preview);
+            assert!(app.preview_in_flight);
+            let req_before = app.preview_req_id;
+
+            // Resizing the pane while an image preview is still in-flight re-dispatches with the new dimensions.
+            app.set_preview_area(20, 10);
+            assert_eq!(app.preview_req_id, req_before + 1);
+            app.wait_for_preview_for_test(Duration::from_secs(2));
+            match &app.preview_data {
+                PreviewData::Image {
+                    protocol,
+                    width,
+                    height,
+                    ..
+                } => {
+                    assert_eq!((*width, *height), (64, 64));
+                    assert!(protocol
+                        .needs_placeholder(ratatui::layout::Rect::new(0, 0, 20, 10))
+                        .is_none());
+                }
+                other => panic!("expected Image preview for photo.png, got {other:?}"),
+            }
+
+            app.handle_graphics_cleared();
+            assert!(matches!(app.preview_data, PreviewData::Empty));
+            assert!(app.preview_in_flight);
+            app.wait_for_preview_for_test(Duration::from_secs(2));
+            assert!(matches!(app.preview_data, PreviewData::Image { .. }));
+        }
 
         let _ = fs::remove_dir_all(&root);
     }
