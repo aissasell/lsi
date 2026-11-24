@@ -11,6 +11,7 @@ When you exit, your terminal scrollback remains intact—and with [Shell Integra
 
 - **Rust toolchain** (Rust 1.88+ and Cargo) if building from source
 - **A Nerd Font** configured in your terminal emulator to render file and folder glyphs (or pass `--no-icons` / toggle `i` at runtime)
+- **Optional video tools (`ffmpegthumbnailer` or `ffmpeg` / `ffprobe`)** for extracting uncached video thumbnails and probing stream metadata (falls back to cached thumbnails or basic file metadata if absent)
 
 ## Installation
 
@@ -18,6 +19,12 @@ Install directly from Git using Cargo:
 
 ```bash
 cargo install --git https://github.com/aissasell/lsi.git
+```
+
+To build a minimal binary without syntax highlighting or image/video decoding:
+
+```bash
+cargo install --git https://github.com/aissasell/lsi.git --no-default-features
 ```
 
 ### Build from a Local Clone

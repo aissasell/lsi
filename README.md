@@ -17,7 +17,7 @@
 - **Interactive Tree & History Navigation**: Step into folders, climb up to parent directories (keeping the exited folder selected), and move back/forward through your navigation history.
 - **File Manipulation, Creation & Renaming**: Multi-select with `Space`, copy (`y`), cut (`x`), paste (`p`), Trash (`Delete`) or permanently delete (`Shift+Delete`), create new files/folders (`a`, ending with `/` for directories), and rename inline with full name & extension editing (`r`).
 - **In-Terminal Editor Integration**: Pressing `Enter` or `l` on a text file suspends the inline UI and opens it directly in `$VISUAL` / `$EDITOR` (e.g., `nvim`) inside the current terminal, returning smoothly when you exit. Binary/media files open via the system opener (or press `O` explicitly).
-- **Side-by-Side Preview Pane**: Toggle an asynchronous preview pane (`v` or `Tab`, scroll with `J`/`K` or `Alt+Down`/`Alt+Up`) with pure-Rust `syntect` syntax highlighting, inline image previews (Kitty Graphics, iTerm2, Sixel, or Unicode half-blocks), and directory previews.
+- **Side-by-Side Preview Pane**: Toggle an asynchronous preview pane (`v` or `Tab`, scroll with `J`/`K` or `Alt+Down`/`Alt+Up`) with pure-Rust `syntect` syntax highlighting, inline image previews (Kitty Graphics, iTerm2, Sixel, or Unicode half-blocks), video thumbnail previews (cached thumbnails + `ffmpegthumbnailer`/`ffmpeg` extraction with `ffprobe` metadata fallback), and directory previews.
 - **Live Search & Sorting**: Filter entries in real time with `/`, and sort by name, size, modified time, extension, or type.
 - **Customizable Color Themes & Keybindings**: Switch between 7 built-in color themes or named custom themes in `$HOME/.config/lsi/themes/<name>.toml`, and remap or unbind every keyboard action in `$HOME/.config/lsi/keybinds.toml`.
 
@@ -25,6 +25,7 @@
 
 - **Rust toolchain** (1.88+ / Cargo)
 - **A Nerd Font** configured in your terminal emulator for icon glyphs (or pass `--no-icons` / toggle `i` at runtime)
+- **Optional video tools (`ffmpegthumbnailer` or `ffmpeg` / `ffprobe`)** for uncached video thumbnails and stream metadata probing (falls back gracefully to cached thumbnails or basic metadata if absent)
 
 ## Installation
 
@@ -82,7 +83,7 @@ lsi --theme catppuccin --sort modified --reverse ~/Projects
 
 ## Keybindings
 
-Every keyboard action can be remapped (or unbound with `[]`) in `$HOME/.config/lsi/keybinds.toml`. See the [Configuration](#configuration-configtoml-themetoml--keybindstoml) section below for an example.
+Every keyboard action can be remapped (or unbound with `[]`) in `$HOME/.config/lsi/keybinds.toml`. See the [Configuration](#configuration-configtoml-themestoml--keybindstoml) section below for an example.
 
 ### Navigation & History
 
