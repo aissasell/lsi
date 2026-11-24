@@ -33,6 +33,7 @@ pub struct ConfigFile {
     pub show_preview: Option<bool>,
     pub syntax_highlight: Option<bool>,
     pub image_preview: Option<bool>,
+    pub video_preview: Option<bool>,
     pub image_protocol: Option<ImageProtocol>,
     pub preview_max_file_mb: Option<u64>,
     pub dirs_first: Option<bool>,
@@ -241,6 +242,7 @@ show_icons = false
 show_preview = true
 syntax_highlight = false
 image_preview = false
+video_preview = false
 image_protocol = "halfblocks"
 preview_max_file_mb = 12
 dirs_first = false
@@ -287,6 +289,7 @@ quit_cd = ["q", "Ctrl+w"]
         assert_eq!(loaded.config.show_preview, Some(true));
         assert_eq!(loaded.config.syntax_highlight, Some(false));
         assert_eq!(loaded.config.image_preview, Some(false));
+        assert_eq!(loaded.config.video_preview, Some(false));
         assert_eq!(
             loaded.config.image_protocol,
             Some(ImageProtocol::Halfblocks)

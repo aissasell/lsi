@@ -8,6 +8,7 @@ mod keybinds;
 mod preview;
 mod theme;
 mod ui;
+mod video_preview;
 
 use std::io::{self, Write};
 use std::path::Path;

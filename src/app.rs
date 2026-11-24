@@ -224,6 +224,7 @@ impl App {
         let preview_config = PreviewConfig {
             syntax_highlight: cfg.syntax_highlight.unwrap_or(true),
             image_preview: cfg.image_preview.unwrap_or(true),
+            video_preview: cfg.video_preview.unwrap_or(true),
             image_protocol: cfg.image_protocol.unwrap_or(ImageProtocol::Auto),
             max_file_bytes: cfg
                 .preview_max_file_mb
@@ -1474,9 +1475,12 @@ impl App {
         if self.show_preview
             && (matches!(self.preview_data, PreviewData::Image { .. })
                 || (self.preview_in_flight
-                    && self
-                        .selected_entry()
-                        .is_some_and(|e| !e.is_dir && is_image_extension(&e.extension))))
+                    && self.selected_entry().is_some_and(|e| {
+                        !e.is_dir
+                            && (is_image_extension(&e.extension)
+                                || (self.preview_config.video_preview
+                                    && crate::video_preview::is_video_extension(&e.extension)))
+                    })))
         {
             self.update_preview(true);
         }
@@ -1503,6 +1507,9 @@ impl App {
                 entries,
                 total_count,
             } => entries.len() + usize::from(*total_count > entries.len()),
+            PreviewData::Metadata { rows, note, .. } => {
+                1 + rows.len() + if note.is_some() { 2 } else { 0 }
+            }
             _ => 0,
         };
         let visible_rows = usize::from(self.preview_area.1.max(1));

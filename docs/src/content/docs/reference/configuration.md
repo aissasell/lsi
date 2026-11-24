@@ -23,6 +23,7 @@ If `config.toml` contains a syntax or type error, `lsi` falls back to defaults.
 | `show_preview` | `preview` | `true` \| `false` | `false` | Open with the side-by-side preview pane enabled |
 | `syntax_highlight` | | `true` \| `false` | `true` | Enable pure-Rust `syntect` syntax highlighting in text previews |
 | `image_preview` | | `true` \| `false` | `true` | Decode & render raster images (`png`, `jpeg`, `gif`, `webp`, `bmp`, `ico`) in the preview pane |
+| `video_preview` | | `true` \| `false` | `true` | Preview cached or CLI-extracted (`ffmpegthumbnailer` / `ffmpeg`) video thumbnails with `ffprobe` metadata fallback |
 | `image_protocol` | | `"auto"` \| `"kitty"` \| `"sixel"` \| `"iterm2"` \| `"halfblocks"` \| `"off"` (`"none"`) | `"auto"` | Preferred terminal graphics protocol for image previews |
 | `preview_max_file_mb` | | integer (`>= 1`) | `20` | Maximum image file size (MiB) before skipping decode |
 | `dirs_first` | | `true` \| `false` | `true` | Group directories before files when sorting |
@@ -47,6 +48,7 @@ show_icons = true
 show_preview = false
 syntax_highlight = true
 image_preview = true
+video_preview = true
 image_protocol = "auto"
 preview_max_file_mb = 20
 dirs_first = true

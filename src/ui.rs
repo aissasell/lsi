@@ -486,6 +486,32 @@ fn render_preview(
         }
         #[cfg(feature = "image-preview")]
         PreviewData::Image { .. } => unreachable!("handled cleanly above"),
+        PreviewData::Metadata { title, rows, note } => {
+            let mut out = vec![Line::from(Span::styled(
+                title.clone(),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ))];
+            let key_width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+            for (k, v) in rows {
+                out.push(Line::from(vec![
+                    Span::styled(
+                        format!("{k:<key_width$} : "),
+                        Style::default().fg(theme.muted),
+                    ),
+                    Span::styled(v.clone(), Style::default().fg(theme.fg)),
+                ]));
+            }
+            if let Some(msg) = note {
+                out.push(Line::from(""));
+                out.push(Line::from(Span::styled(
+                    msg.clone(),
+                    Style::default().fg(theme.code_fg),
+                )));
+            }
+            out
+        }
         PreviewData::Binary { size, detail } => {
             let (num, unit) = format_size(*size, false);
             let mut out = vec![
@@ -1263,6 +1289,20 @@ toggle_help = "F1"
                 }
             ));
         }
+
+        app.preview_data = PreviewData::Metadata {
+            title: "Video file".to_string(),
+            rows: vec![
+                ("Format".to_string(), "MP4".to_string()),
+                ("Resolution".to_string(), "1920×1080".to_string()),
+            ],
+            note: Some("Install ffmpeg".to_string()),
+        };
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let meta_out = buffer_to_string(&terminal);
+        assert!(meta_out.contains("Video file"));
+        assert!(meta_out.contains("1920×1080"));
+        assert!(meta_out.contains("Install ffmpeg"));
 
         let _ = fs::remove_dir_all(&base);
     }

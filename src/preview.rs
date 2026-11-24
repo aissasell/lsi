@@ -33,6 +33,9 @@ use syntect::{
 
 use crate::cli::SortField;
 use crate::fs_entry::{read_directory_with_cache, FileEntry, IdentityCache};
+use crate::video_preview::{build_video_preview, is_video_extension};
+#[cfg(feature = "image-preview")]
+use crate::video_preview::{has_cached_thumbnail, VIDEO_DEBOUNCE_MS};
 
 pub const PREVIEW_MAX_LINES: usize = 200;
 pub const PREVIEW_MAX_BYTES: usize = 64 * 1024;
@@ -65,6 +68,7 @@ pub enum ImageProtocol {
 pub struct PreviewConfig {
     pub syntax_highlight: bool,
     pub image_preview: bool,
+    pub video_preview: bool,
     pub image_protocol: ImageProtocol,
     pub max_file_bytes: u64,
 }
@@ -74,6 +78,7 @@ impl Default for PreviewConfig {
         Self {
             syntax_highlight: true,
             image_preview: true,
+            video_preview: true,
             image_protocol: ImageProtocol::Auto,
             max_file_bytes: DEFAULT_MAX_FILE_BYTES,
         }
@@ -111,6 +116,11 @@ pub enum PreviewData {
         height: u32,
         format_label: String,
     },
+    Metadata {
+        title: String,
+        rows: Vec<(String, String)>,
+        note: Option<String>,
+    },
     Binary {
         size: u64,
         detail: Option<String>,
@@ -147,6 +157,12 @@ impl std::fmt::Debug for PreviewData {
                 .field("width", width)
                 .field("height", height)
                 .field("format_label", format_label)
+                .finish(),
+            Self::Metadata { title, rows, note } => f
+                .debug_struct("Metadata")
+                .field("title", title)
+                .field("rows", &rows.len())
+                .field("note", note)
                 .finish(),
             Self::Binary { size, detail } => f
                 .debug_struct("Binary")
@@ -261,13 +277,14 @@ struct PreviewCacheKey {
     is_light_theme: bool,
     syntax_highlight: bool,
     image_preview: bool,
+    video_preview: bool,
     image_protocol: ImageProtocol,
     max_file_bytes: u64,
 }
 
 impl PreviewCacheKey {
     fn from_request(req: &PreviewRequest) -> Self {
-        let pane_size = if is_image_request(req) {
+        let pane_size = if is_image_request(req) || is_video_thumbnail_request(req) {
             req.pane_size
         } else {
             (0, 0)
@@ -281,6 +298,7 @@ impl PreviewCacheKey {
             is_light_theme: req.is_light_theme,
             syntax_highlight: req.config.syntax_highlight,
             image_preview: req.config.image_preview,
+            video_preview: req.config.video_preview,
             image_protocol: req.config.image_protocol,
             max_file_bytes: req.config.max_file_bytes,
         }
@@ -295,6 +313,23 @@ fn is_image_request(req: &PreviewRequest) -> bool {
             && req.config.image_preview
             && req.config.image_protocol != ImageProtocol::Off
             && is_image_extension(&req.entry.extension)
+    }
+    #[cfg(not(feature = "image-preview"))]
+    {
+        let _ = req;
+        false
+    }
+}
+
+fn is_video_thumbnail_request(req: &PreviewRequest) -> bool {
+    #[cfg(feature = "image-preview")]
+    {
+        !req.entry.is_dir
+            && !req.entry.symlink_broken
+            && req.config.video_preview
+            && req.config.image_preview
+            && req.config.image_protocol != ImageProtocol::Off
+            && is_video_extension(&req.entry.extension)
     }
     #[cfg(not(feature = "image-preview"))]
     {
@@ -357,9 +392,14 @@ fn worker_loop(
     let cap = NonZeroUsize::new(PREVIEW_CACHE_CAP).expect("PREVIEW_CACHE_CAP > 0");
     let mut cache: LruCache<PreviewCacheKey, PreviewData> = LruCache::new(cap);
     let mut identity_cache = IdentityCache::new();
+    let mut pending_cmd: Option<WorkerCommand> = None;
 
     loop {
-        let next_req = match cmd_rx.recv() {
+        let first_cmd = match pending_cmd.take() {
+            Some(cmd) => Ok(cmd),
+            None => cmd_rx.recv(),
+        };
+        let next_req = match first_cmd {
             Ok(WorkerCommand::Request(req)) => Some(req),
             Ok(WorkerCommand::Shutdown) | Err(_) => return,
             Ok(other) => {
@@ -396,11 +436,20 @@ fn worker_loop(
             continue;
         }
 
-        // Briefly debounce raster image decoding so fast cursor scrolling skips intermediate photos.
+        // Briefly debounce raster image and uncached video decoding during fast cursor scrolling.
         #[cfg(feature = "image-preview")]
-        if is_image_request(&req) {
+        if is_image_request(&req) || is_video_thumbnail_request(&req) {
             loop {
-                match cmd_rx.recv_timeout(Duration::from_millis(IMAGE_DEBOUNCE_MS)) {
+                let delay_ms = if is_video_thumbnail_request(&req) {
+                    if has_cached_thumbnail(&req.entry) {
+                        IMAGE_DEBOUNCE_MS
+                    } else {
+                        VIDEO_DEBOUNCE_MS
+                    }
+                } else {
+                    IMAGE_DEBOUNCE_MS
+                };
+                match cmd_rx.recv_timeout(Duration::from_millis(delay_ms)) {
                     Ok(WorkerCommand::Request(newer)) => {
                         req = newer;
                         match drain_to_latest(&cmd_rx, None, &mut cache, &mut picker) {
@@ -408,11 +457,11 @@ fn worker_loop(
                             DrainedCommand::Request(None) => {}
                             DrainedCommand::Shutdown => return,
                         }
-                        if !is_image_request(&req) {
+                        if !is_image_request(&req) && !is_video_thumbnail_request(&req) {
                             break;
                         }
                     }
-                    Ok(WorkerCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    Ok(WorkerCommand::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
                         return;
                     }
                     Ok(other) => {
@@ -452,7 +501,24 @@ fn worker_loop(
             config: &req.config,
             picker: picker.as_deref(),
         };
-        let data = build_preview_sync(&req.entry, &mut identity_cache, &opts);
+        let mut is_cancelled = || -> bool {
+            if pending_cmd.is_some() {
+                return true;
+            }
+            match cmd_rx.try_recv() {
+                Ok(cmd) => {
+                    pending_cmd = Some(cmd);
+                    true
+                }
+                Err(mpsc::TryRecvError::Disconnected) => true,
+                Err(mpsc::TryRecvError::Empty) => false,
+            }
+        };
+        let Some(data) =
+            build_preview_with_cancel(&req.entry, &mut identity_cache, &opts, &mut is_cancelled)
+        else {
+            continue;
+        };
         if !matches!(data, PreviewData::Error(_)) {
             cache.put(cache_key, data.clone());
         }
@@ -556,24 +622,34 @@ pub fn clear_terminal_graphics(out: &mut impl Write, uses_kitty: bool) -> io::Re
 }
 
 /// Synchronously builds preview data for `entry`.
+#[cfg(all(test, any(feature = "syntax-highlight", feature = "image-preview")))]
 pub fn build_preview_sync(
     entry: &FileEntry,
     cache: &mut IdentityCache,
     opts: &PreviewBuildOpts<'_>,
 ) -> PreviewData {
+    build_preview_with_cancel(entry, cache, opts, &mut || false).unwrap_or(PreviewData::Empty)
+}
+
+fn build_preview_with_cancel(
+    entry: &FileEntry,
+    cache: &mut IdentityCache,
+    opts: &PreviewBuildOpts<'_>,
+    is_cancelled: &mut dyn FnMut() -> bool,
+) -> Option<PreviewData> {
     if entry.symlink_broken {
-        return PreviewData::Error(format!(
+        return Some(PreviewData::Error(format!(
             "Broken symlink -> {}",
             entry
                 .symlink_target
                 .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "?".to_string())
-        ));
+        )));
     }
 
     if entry.is_dir {
-        return match read_directory_with_cache(&entry.path, cache) {
+        return Some(match read_directory_with_cache(&entry.path, cache) {
             Ok(mut children) => {
                 if !opts.show_hidden {
                     children.retain(|c| !c.is_hidden);
@@ -587,7 +663,7 @@ pub fn build_preview_sync(
                 }
             }
             Err(err) => PreviewData::Error(err.to_string()),
-        };
+        });
     }
 
     #[cfg(feature = "image-preview")]
@@ -596,28 +672,37 @@ pub fn build_preview_sync(
         && is_image_extension(&entry.extension)
     {
         if let Some(picker) = opts.picker {
-            return build_image_preview(entry, picker, opts.pane_size, opts.config.max_file_bytes);
+            return Some(build_image_preview(
+                entry,
+                picker,
+                opts.pane_size,
+                opts.config.max_file_bytes,
+            ));
         }
+    }
+
+    if is_video_extension(&entry.extension) {
+        return build_video_preview(entry, opts, is_cancelled);
     }
 
     let mut file = match File::open(&entry.path) {
         Ok(f) => f,
-        Err(err) => return PreviewData::Error(format!("Cannot read file: {err}")),
+        Err(err) => return Some(PreviewData::Error(format!("Cannot read file: {err}"))),
     };
 
     let mut buf = vec![0_u8; PREVIEW_MAX_BYTES];
     let n = match file.read(&mut buf) {
         Ok(n) => n,
-        Err(err) => return PreviewData::Error(format!("Read error: {err}")),
+        Err(err) => return Some(PreviewData::Error(format!("Read error: {err}"))),
     };
     buf.truncate(n);
 
     let probe_len = buf.len().min(1024);
     if buf[..probe_len].contains(&0) {
-        return PreviewData::Binary {
+        return Some(PreviewData::Binary {
             size: entry.size,
             detail: None,
-        };
+        });
     }
 
     let text = String::from_utf8_lossy(&buf);
@@ -643,10 +728,44 @@ pub fn build_preview_sync(
         (plain_lines(&raw_lines), None)
     };
 
-    PreviewData::Text {
+    Some(PreviewData::Text {
         lines,
         truncated,
         syntax_name,
+    })
+}
+
+/// Resizes and encodes an already-decoded image into the terminal protocol for `pane_size`.
+#[cfg(feature = "image-preview")]
+pub(crate) fn encode_image_for_pane(
+    mut dyn_img: image::DynamicImage,
+    width: u32,
+    height: u32,
+    format_label: String,
+    picker: &ImagePickerHandle,
+    pane_size: (u16, u16),
+) -> PreviewData {
+    let cols = pane_size.0.max(2);
+    let rows = pane_size.1.max(2);
+    let font = picker.font_size();
+    let target_px_w = u32::from(cols).saturating_mul(u32::from(font.width.max(1)));
+    let target_px_h = u32::from(rows).saturating_mul(u32::from(font.height.max(1)));
+    if dyn_img.width() > target_px_w || dyn_img.height() > target_px_h {
+        dyn_img = dyn_img.resize(target_px_w, target_px_h, FilterType::Triangle);
+    }
+
+    match picker.new_protocol(
+        dyn_img,
+        Size::new(cols, rows),
+        Resize::Fit(Some(FilterType::Triangle)),
+    ) {
+        Ok(protocol) => PreviewData::Image {
+            protocol,
+            width,
+            height,
+            format_label,
+        },
+        Err(err) => PreviewData::Error(format!("Image encode error: {err}")),
     }
 }
 
@@ -706,7 +825,7 @@ fn build_image_preview(
         Err(err) => return PreviewData::Error(format!("Cannot read image: {err}")),
     };
 
-    let mut dyn_img = match decode_reader.decode() {
+    let dyn_img = match decode_reader.decode() {
         Ok(img) => img,
         Err(err) => {
             return PreviewData::Binary {
@@ -716,28 +835,7 @@ fn build_image_preview(
         }
     };
 
-    let cols = pane_size.0.max(2);
-    let rows = pane_size.1.max(2);
-    let font = picker.font_size();
-    let target_px_w = u32::from(cols).saturating_mul(u32::from(font.width.max(1)));
-    let target_px_h = u32::from(rows).saturating_mul(u32::from(font.height.max(1)));
-    if dyn_img.width() > target_px_w || dyn_img.height() > target_px_h {
-        dyn_img = dyn_img.resize(target_px_w, target_px_h, FilterType::Triangle);
-    }
-
-    match picker.new_protocol(
-        dyn_img,
-        Size::new(cols, rows),
-        Resize::Fit(Some(FilterType::Triangle)),
-    ) {
-        Ok(protocol) => PreviewData::Image {
-            protocol,
-            width,
-            height,
-            format_label,
-        },
-        Err(err) => PreviewData::Error(format!("Image encode error: {err}")),
-    }
+    encode_image_for_pane(dyn_img, width, height, format_label, picker, pane_size)
 }
 
 fn plain_lines(raw_lines: &[String]) -> Vec<PreviewLine> {

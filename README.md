@@ -193,6 +193,7 @@ show_icons = true
 show_preview = false
 syntax_highlight = true
 image_preview = true
+video_preview = true
 image_protocol = "auto" # auto, kitty, sixel, iterm2, halfblocks, off
 preview_max_file_mb = 20
 dirs_first = true
