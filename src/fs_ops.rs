@@ -1,7 +1,6 @@
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::symlink;
+use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -95,7 +94,18 @@ pub fn move_entry(src: &Path, dest_dir: &Path) -> Result<Option<PathBuf>> {
 pub fn permanent_delete(path: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(path)
         .with_context(|| format!("Cannot inspect '{}'", path.display()))?;
-    if meta.file_type().is_dir() {
+    let file_type = meta.file_type();
+    if file_type.is_symlink() {
+        #[cfg(windows)]
+        let res = if fs::metadata(path).is_ok_and(|target| target.is_dir()) {
+            fs::remove_dir(path)
+        } else {
+            fs::remove_file(path)
+        };
+        #[cfg(not(windows))]
+        let res = fs::remove_file(path);
+        res.with_context(|| format!("Failed to remove '{}'", path.display()))?;
+    } else if file_type.is_dir() {
         fs::remove_dir_all(path)
             .with_context(|| format!("Failed to remove directory '{}'", path.display()))?;
     } else {
@@ -257,7 +267,7 @@ pub fn rename_entry(src: &Path, raw_new_name: &str) -> Result<PathBuf> {
     if trimmed.is_empty() {
         bail!("Name cannot be empty");
     }
-    if trimmed.contains('/') || trimmed == "." || trimmed == ".." {
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed == "." || trimmed == ".." {
         bail!("Invalid name: {trimmed}");
     }
 
@@ -294,7 +304,41 @@ fn default_trash_dir() -> Result<PathBuf> {
             .join("share")
             .join("Trash"));
     }
+    #[cfg(windows)]
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA").filter(|s| !s.is_empty()) {
+        return Ok(PathBuf::from(local_app_data).join("lsi").join("Trash"));
+    }
+    if let Some(profile) = std::env::var_os("USERPROFILE").filter(|s| !s.is_empty()) {
+        return Ok(PathBuf::from(profile)
+            .join(".local")
+            .join("share")
+            .join("Trash"));
+    }
     bail!("Cannot locate Trash directory (HOME and XDG_DATA_HOME are unset)")
+}
+
+fn create_symlink(target: &Path, dest: &Path, target_is_dir: bool) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = target_is_dir;
+        std::os::unix::fs::symlink(target, dest)
+    }
+    #[cfg(windows)]
+    {
+        if target_is_dir {
+            std::os::windows::fs::symlink_dir(target, dest)
+        } else {
+            std::os::windows::fs::symlink_file(target, dest)
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, dest, target_is_dir);
+        Err(std::io::Error::new(
+            ErrorKind::Unsupported,
+            "Symlinks are unsupported on this platform",
+        ))
+    }
 }
 
 fn copy_path_recursive(src: &Path, dest: &Path) -> Result<()> {
@@ -305,7 +349,8 @@ fn copy_path_recursive(src: &Path, dest: &Path) -> Result<()> {
     if file_type.is_symlink() {
         let target = fs::read_link(src)
             .with_context(|| format!("Cannot read symlink '{}'", src.display()))?;
-        symlink(&target, dest).with_context(|| {
+        let target_is_dir = fs::metadata(src).is_ok_and(|m| m.is_dir());
+        create_symlink(&target, dest, target_is_dir).with_context(|| {
             format!(
                 "Failed to copy symlink '{}' -> '{}'",
                 src.display(),
@@ -341,10 +386,25 @@ fn copy_path_recursive(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+fn is_cross_device_error(err: &std::io::Error) -> bool {
+    if err.kind() == ErrorKind::CrossesDevices {
+        return true;
+    }
+    #[cfg(unix)]
+    if err.raw_os_error() == Some(libc::EXDEV) {
+        return true;
+    }
+    #[cfg(windows)]
+    if err.raw_os_error() == Some(17) {
+        return true;
+    }
+    false
+}
+
 fn rename_or_cross_device_move(src: &Path, dest: &Path) -> Result<()> {
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
-        Err(err) if err.raw_os_error() == Some(libc::EXDEV) => {
+        Err(err) if is_cross_device_error(&err) => {
             copy_path_recursive(src, dest)?;
             permanent_delete(src)?;
             Ok(())
@@ -360,10 +420,19 @@ fn rename_or_cross_device_move(src: &Path, dest: &Path) -> Result<()> {
 }
 
 fn percent_encode_path(path: &Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
-    let bytes = path.as_os_str().as_bytes();
-    let mut out = String::with_capacity(bytes.len());
-    for &b in bytes {
+    let raw_bytes: std::borrow::Cow<'_, [u8]> = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            std::borrow::Cow::Borrowed(path.as_os_str().as_bytes())
+        }
+        #[cfg(not(unix))]
+        {
+            std::borrow::Cow::Owned(path.to_string_lossy().into_owned().into_bytes())
+        }
+    };
+    let mut out = String::with_capacity(raw_bytes.len());
+    for &b in raw_bytes.as_ref() {
         if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'.' | b'_' | b'~') {
             out.push(b as char);
         } else {
@@ -434,7 +503,8 @@ mod tests {
         fs::create_dir_all(&dest).unwrap();
         fs::write(src_dir.join("a.txt"), "hello").unwrap();
         fs::write(sub.join("b.txt"), "world").unwrap();
-        symlink("a.txt", src_dir.join("link_a")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("a.txt", src_dir.join("link_a")).unwrap();
 
         // Copy directory recursively including symlink
         let copied_dir = copy_entry(&src_dir, &dest).unwrap();
@@ -444,8 +514,11 @@ mod tests {
             fs::read_to_string(copied_dir.join("nested/b.txt")).unwrap(),
             "world"
         );
-        let link_meta = fs::symlink_metadata(copied_dir.join("link_a")).unwrap();
-        assert!(link_meta.file_type().is_symlink());
+        #[cfg(unix)]
+        {
+            let link_meta = fs::symlink_metadata(copied_dir.join("link_a")).unwrap();
+            assert!(link_meta.file_type().is_symlink());
+        }
 
         // Self-copy guard
         assert!(copy_entry(&src_dir, &sub).is_err());
@@ -477,11 +550,14 @@ mod tests {
         assert_eq!(fs::read_to_string(&moved).unwrap(), "move me");
 
         // Deleting a symlink to a directory deletes only the symlink, preserving target_dir
-        let link_to_dir = work_dir.join("dir_link");
-        symlink(&target_dir, &link_to_dir).unwrap();
-        permanent_delete(&link_to_dir).unwrap();
-        assert!(fs::symlink_metadata(&link_to_dir).is_err());
-        assert!(target_dir.join("keep.txt").exists());
+        #[cfg(unix)]
+        {
+            let link_to_dir = work_dir.join("dir_link");
+            std::os::unix::fs::symlink(&target_dir, &link_to_dir).unwrap();
+            permanent_delete(&link_to_dir).unwrap();
+            assert!(fs::symlink_metadata(&link_to_dir).is_err());
+            assert!(target_dir.join("keep.txt").exists());
+        }
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -579,17 +655,20 @@ mod tests {
         assert!(!dir_a.exists());
         assert_eq!(fs::read_to_string(dir_b.join("inside.txt")).unwrap(), "inside");
 
-        let link = root.join("link_a");
-        symlink(dir_b.join("inside.txt"), &link).unwrap();
-        let link_renamed = rename_entry(&link, "link_b").unwrap();
-        assert_eq!(link_renamed, root.join("link_b"));
-        assert!(link.symlink_metadata().is_err());
-        assert!(link_renamed
-            .symlink_metadata()
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert_eq!(fs::read_to_string(dir_b.join("inside.txt")).unwrap(), "inside");
+        #[cfg(unix)]
+        {
+            let link = root.join("link_a");
+            std::os::unix::fs::symlink(dir_b.join("inside.txt"), &link).unwrap();
+            let link_renamed = rename_entry(&link, "link_b").unwrap();
+            assert_eq!(link_renamed, root.join("link_b"));
+            assert!(link.symlink_metadata().is_err());
+            assert!(link_renamed
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read_to_string(dir_b.join("inside.txt")).unwrap(), "inside");
+        }
 
         let same = rename_entry(&renamed_file, "notes.md").unwrap();
         assert_eq!(same, renamed_file);

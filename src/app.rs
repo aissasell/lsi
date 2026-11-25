@@ -763,7 +763,11 @@ impl App {
 
             // Home jump & reload
             NormalAction::JumpHome => {
-                if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+                let home_opt = std::env::var_os("HOME")
+                    .filter(|v| !v.is_empty())
+                    .or_else(|| std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()))
+                    .map(PathBuf::from);
+                if let Some(home) = home_opt {
                     if home.is_dir() {
                         let remembered = self.dir_selection_memory.get(&home).cloned();
                         self.navigate_to(home, remembered, true);

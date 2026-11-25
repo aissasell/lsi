@@ -336,10 +336,10 @@ fn resolve_cache_base(xdg_cache_home: Option<&OsStr>, home: Option<&OsStr>) -> O
 
 #[cfg(feature = "image-preview")]
 fn default_cache_base() -> Option<PathBuf> {
-    resolve_cache_base(
-        std::env::var_os("XDG_CACHE_HOME").as_deref(),
-        std::env::var_os("HOME").as_deref(),
-    )
+    let home = std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()));
+    resolve_cache_base(std::env::var_os("XDG_CACHE_HOME").as_deref(), home.as_deref())
 }
 
 #[cfg(any(feature = "image-preview", test))]
@@ -1222,11 +1222,14 @@ mod tests {
 
     #[test]
     fn resolves_thumbnail_cache_dirs_from_xdg_or_home_fallback() {
-        let home = OsStr::new("/home/tester");
-        let expected_fd = PathBuf::from("/home/tester")
-            .join(".cache")
-            .join("thumbnails");
-        let expected_lsi = PathBuf::from("/home/tester")
+        #[cfg(windows)]
+        let (home_str, xdg_str) = (r"C:\Users\tester", r"C:\xdg-cache");
+        #[cfg(not(windows))]
+        let (home_str, xdg_str) = ("/home/tester", "/var/tmp/xdg-cache");
+
+        let home = OsStr::new(home_str);
+        let expected_fd = PathBuf::from(home_str).join(".cache").join("thumbnails");
+        let expected_lsi = PathBuf::from(home_str)
             .join(".cache")
             .join("lsi")
             .join("thumbnails");
@@ -1256,18 +1259,14 @@ mod tests {
         }
 
         // Valid absolute $XDG_CACHE_HOME overrides $HOME/.cache
-        let base_xdg = resolve_cache_base(Some(OsStr::new("/var/tmp/xdg-cache")), Some(home));
+        let base_xdg = resolve_cache_base(Some(OsStr::new(xdg_str)), Some(home));
         assert_eq!(
             freedesktop_thumbnail_dir(base_xdg.as_deref()),
-            Some(PathBuf::from("/var/tmp/xdg-cache").join("thumbnails"))
+            Some(PathBuf::from(xdg_str).join("thumbnails"))
         );
         assert_eq!(
             lsi_thumbnail_cache_dir(base_xdg.as_deref()),
-            Some(
-                PathBuf::from("/var/tmp/xdg-cache")
-                    .join("lsi")
-                    .join("thumbnails")
-            )
+            Some(PathBuf::from(xdg_str).join("lsi").join("thumbnails"))
         );
 
         // Unset when both environment variables are missing

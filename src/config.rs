@@ -66,9 +66,12 @@ pub struct LoadedConfig {
     pub warning: Option<String>,
 }
 
-/// Returns `$HOME/.config/lsi` when `HOME` is set.
+/// Returns `$HOME/.config/lsi` (or `%USERPROFILE%\.config\lsi` on Windows) when set.
 pub fn default_config_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config").join("lsi"))
+    std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()))
+        .map(|home| PathBuf::from(home).join(".config").join("lsi"))
 }
 
 /// Resolves `raw_name` against built-in themes first, then `<themes_dir>/<name>.toml`.
