@@ -195,7 +195,12 @@ fn launch_editor(path: &Path) -> io::Result<()> {
         }
     }
 
-    for fallback in ["vi", "nano"] {
+    #[cfg(windows)]
+    let fallbacks: &[&str] = &["nvim", "vim", "notepad"];
+    #[cfg(not(windows))]
+    let fallbacks: &[&str] = &["vi", "nano"];
+
+    for fallback in fallbacks {
         match Command::new(fallback).arg(path).status() {
             Ok(status) => {
                 if !status.success() {
@@ -212,6 +217,9 @@ fn launch_editor(path: &Path) -> io::Result<()> {
 
     Err(io::Error::new(
         io::ErrorKind::NotFound,
-        "No editor found ($VISUAL, $EDITOR, vi, or nano)",
+        format!(
+            "No editor found ($VISUAL, $EDITOR, or {})",
+            fallbacks.join(", ")
+        ),
     ))
 }

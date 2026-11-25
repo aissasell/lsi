@@ -1,8 +1,12 @@
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::ffi::CStr;
 use std::fs;
 use std::io::ErrorKind;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -65,12 +69,20 @@ impl IdentityCache {
     }
 }
 
-/// Returns the effective UID of the current process.
+/// Returns the effective UID of the current process (`0` on non-Unix platforms).
+#[cfg(unix)]
 pub fn current_uid() -> u32 {
     // SAFETY: `geteuid` has no preconditions and always succeeds.
     unsafe { libc::geteuid() }
 }
 
+/// Returns `0` on non-Unix platforms.
+#[cfg(not(unix))]
+pub fn current_uid() -> u32 {
+    0
+}
+
+#[cfg(unix)]
 fn lookup_username(uid: u32) -> Option<String> {
     let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
     let mut buf = vec![0_u8; 1024];
@@ -108,6 +120,15 @@ fn lookup_username(uid: u32) -> Option<String> {
     }
 }
 
+#[cfg(not(unix))]
+fn lookup_username(_uid: u32) -> Option<String> {
+    std::env::var("USERNAME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| Some("-".to_string()))
+}
+
+#[cfg(unix)]
 fn lookup_groupname(gid: u32) -> Option<String> {
     let mut grp = std::mem::MaybeUninit::<libc::group>::uninit();
     let mut buf = vec![0_u8; 1024];
@@ -145,6 +166,11 @@ fn lookup_groupname(gid: u32) -> Option<String> {
     }
 }
 
+#[cfg(not(unix))]
+fn lookup_groupname(_gid: u32) -> Option<String> {
+    Some("-".to_string())
+}
+
 /// Reads all entries in `dir`, resolving metadata and ownership with a temporary cache.
 #[allow(dead_code)]
 pub fn read_directory(dir: &Path) -> Result<Vec<FileEntry>> {
@@ -172,24 +198,81 @@ pub fn read_directory_with_cache(dir: &Path, cache: &mut IdentityCache) -> Resul
     Ok(entries)
 }
 
+#[cfg(unix)]
+fn platform_entry_attrs(
+    link_meta: &fs::Metadata,
+    target_meta: Option<&fs::Metadata>,
+    is_dir: bool,
+    is_symlink: bool,
+    name: &str,
+    _ext: &str,
+) -> (u32, u32, u32, bool, bool) {
+    let mode = link_meta.mode();
+    let effective_exec_mode = target_meta.map(|m| m.mode()).unwrap_or(mode);
+    let uid = link_meta.uid();
+    let gid = link_meta.gid();
+    let is_executable = !is_dir && !is_symlink && (effective_exec_mode & 0o111 != 0);
+    let is_hidden = name.starts_with('.');
+    (mode, uid, gid, is_executable, is_hidden)
+}
+
+#[cfg(not(unix))]
+fn platform_entry_attrs(
+    link_meta: &fs::Metadata,
+    target_meta: Option<&fs::Metadata>,
+    is_dir: bool,
+    is_symlink: bool,
+    name: &str,
+    ext: &str,
+) -> (u32, u32, u32, bool, bool) {
+    let is_executable = !is_dir
+        && !is_symlink
+        && matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "exe" | "bat" | "cmd" | "com" | "ps1"
+        );
+    let readonly = target_meta.unwrap_or(link_meta).permissions().readonly();
+    let mode = if is_symlink {
+        0o120_777
+    } else if is_dir {
+        if readonly {
+            0o040_555
+        } else {
+            0o040_755
+        }
+    } else if readonly {
+        if is_executable {
+            0o100_555
+        } else {
+            0o100_444
+        }
+    } else if is_executable {
+        0o100_755
+    } else {
+        0o100_644
+    };
+    #[cfg(windows)]
+    let is_hidden = name.starts_with('.') || (link_meta.file_attributes() & 0x2 != 0);
+    #[cfg(not(windows))]
+    let is_hidden = name.starts_with('.');
+    (mode, 0, 0, is_executable, is_hidden)
+}
+
 fn build_file_entry(name: String, path: PathBuf, cache: &mut IdentityCache) -> Option<FileEntry> {
     let link_meta = fs::symlink_metadata(&path).ok()?;
     let file_type = link_meta.file_type();
     let is_symlink = file_type.is_symlink();
 
-    let (is_dir, symlink_broken, effective_exec_mode) = if is_symlink {
+    let (is_dir, symlink_broken, target_meta) = if is_symlink {
         match fs::metadata(&path) {
-            Ok(target_meta) => {
-                let target_is_dir = target_meta.is_dir();
-                (target_is_dir, false, target_meta.mode())
-            }
+            Ok(target_meta) => (target_meta.is_dir(), false, Some(target_meta)),
             Err(err) => {
                 let broken = err.kind() != ErrorKind::PermissionDenied;
-                (false, broken, link_meta.mode())
+                (false, broken, None)
             }
         }
     } else {
-        (link_meta.is_dir(), false, link_meta.mode())
+        (link_meta.is_dir(), false, None)
     };
 
     let symlink_target = if is_symlink {
@@ -197,14 +280,6 @@ fn build_file_entry(name: String, path: PathBuf, cache: &mut IdentityCache) -> O
     } else {
         None
     };
-
-    let mode = link_meta.mode();
-    let uid = link_meta.uid();
-    let gid = link_meta.gid();
-    let owner = cache.resolve_user(uid);
-    let group = cache.resolve_group(gid);
-    let is_hidden = name.starts_with('.');
-    let is_executable = !is_dir && !is_symlink && (effective_exec_mode & 0o111 != 0);
 
     let extension = if is_dir {
         String::new()
@@ -215,6 +290,17 @@ fn build_file_entry(name: String, path: PathBuf, cache: &mut IdentityCache) -> O
             .map(str::to_ascii_lowercase)
             .unwrap_or_default()
     };
+
+    let (mode, uid, gid, is_executable, is_hidden) = platform_entry_attrs(
+        &link_meta,
+        target_meta.as_ref(),
+        is_dir,
+        is_symlink,
+        &name,
+        &extension,
+    );
+    let owner = cache.resolve_user(uid);
+    let group = cache.resolve_group(gid);
 
     Some(FileEntry {
         name,
@@ -375,24 +461,33 @@ mod tests {
         fs::create_dir_all(base.join("sub")).unwrap();
         fs::write(base.join("hello.rs"), "fn main() {}\n").unwrap();
         fs::write(base.join(".hidden"), "secret").unwrap();
-        std::os::unix::fs::symlink(base.join("sub"), base.join("sub_link")).unwrap();
-        std::os::unix::fs::symlink(base.join("missing"), base.join("broken_link")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(base.join("sub"), base.join("sub_link")).unwrap();
+            std::os::unix::fs::symlink(base.join("missing"), base.join("broken_link")).unwrap();
+        }
 
         let entries = read_directory(&base).unwrap();
+        #[cfg(unix)]
         assert_eq!(entries.len(), 5);
+        #[cfg(not(unix))]
+        assert_eq!(entries.len(), 3);
 
         let hidden = entries.iter().find(|e| e.name == ".hidden").unwrap();
         assert!(hidden.is_hidden);
         assert!(!hidden.is_dir);
 
-        let sub_link = entries.iter().find(|e| e.name == "sub_link").unwrap();
-        assert!(sub_link.is_symlink);
-        assert!(sub_link.is_dir);
-        assert!(!sub_link.symlink_broken);
+        #[cfg(unix)]
+        {
+            let sub_link = entries.iter().find(|e| e.name == "sub_link").unwrap();
+            assert!(sub_link.is_symlink);
+            assert!(sub_link.is_dir);
+            assert!(!sub_link.symlink_broken);
 
-        let broken = entries.iter().find(|e| e.name == "broken_link").unwrap();
-        assert!(broken.is_symlink);
-        assert!(broken.symlink_broken);
+            let broken = entries.iter().find(|e| e.name == "broken_link").unwrap();
+            assert!(broken.is_symlink);
+            assert!(broken.symlink_broken);
+        }
 
         let rs_file = entries.iter().find(|e| e.name == "hello.rs").unwrap();
         assert_eq!(rs_file.extension, "rs");
