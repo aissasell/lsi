@@ -3,6 +3,7 @@ name = "lsi"
 version = "1.2.2"
 edition = "2021"
 description = "An interactive eza-like terminal file explorer with Nerd Fonts and themes"
+repository = "https://github.com/aissasell/lsi"
 
 [features]
 default = ["syntax-highlight", "image-preview"]
@@ -35,3 +36,8 @@ image = { version = "0.25", optional = true, default-features = false, features 
   "bmp",
   "ico",
 ] }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
