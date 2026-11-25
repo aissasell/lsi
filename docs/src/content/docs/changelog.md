@@ -5,6 +5,15 @@ description: Release history and notable changes for lsi.
 
 All notable changes to `lsi` are documented on this page.
 
+## [1.3.0] — 2026-11-25
+
+### Added
+
+- **Cross-platform Windows support**:
+  - **Filesystem metadata (`src/fs_entry.rs`)**: Gated POSIX/Unix `libc` lookups behind `#[cfg(unix)]` and added Windows metadata handling for permissions display, executable detection (`.exe`, `.bat`, `.cmd`, `.com`, `.ps1`), Windows `FILE_ATTRIBUTE_HIDDEN` detection, and `%USERNAME%` owner fallback.
+  - **File operations (`src/fs_ops.rs`)**: Added cross-platform symlink copying (`symlink_file` / `symlink_dir` on Windows), directory-symlink-safe permanent deletion on Windows, cross-device move detection (`ErrorKind::CrossesDevices` / Windows error `17`), `\` rejection during inline rename, and `%LOCALAPPDATA%\lsi\Trash` / `%USERPROFILE%\.local\share\Trash` Trash directory fallbacks.
+  - **Windows paths & editor fallbacks (`src/config.rs`, `src/app.rs`, `src/video_preview.rs`, `src/main.rs`)**: Added `%USERPROFILE%` fallbacks alongside `$HOME` for config lookup (`%USERPROFILE%\.config\lsi`), `~` home jump, and video thumbnail cache paths (`%USERPROFILE%\.cache`), plus Windows editor fallbacks (`nvim`, `vim`, `notepad`).
+
 ## [1.2.2] — 2026-11-23
 
 ### Added

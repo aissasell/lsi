@@ -3,7 +3,7 @@
   <h1><code>lsi</code> — Interactive <code>eza</code>-style Terminal File Explorer</h1>
 </div>
 
-`lsi` is an interactive directory listing tool written in Rust with `ratatui` and `crossterm`. Inspired by `eza`, it renders directory contents inline directly below your shell prompt while letting you scroll, preview files, navigate back and forth through the folder tree and history, toggle metadata columns, switch color themes, and open files right in your terminal editor.
+`lsi` is an interactive directory listing tool written in Rust with `ratatui` and `crossterm` for Linux, macOS, and Windows. Inspired by `eza`, it renders directory contents inline directly below your shell prompt while letting you scroll, preview files, navigate back and forth through the folder tree and history, toggle metadata columns, switch color themes, and open files right in your terminal editor.
 
 ## Features
 
@@ -23,19 +23,33 @@
 
 ## Prerequisites
 
-- **Rust toolchain** (1.88+ / Cargo)
+- **Rust toolchain** (1.88+ / Cargo) if building from source
 - **A Nerd Font** configured in your terminal emulator for icon glyphs (or pass `--no-icons` / toggle `i` at runtime)
 - **Optional video tools (`ffmpegthumbnailer` or `ffmpeg` / `ffprobe`)** for uncached video thumbnails and stream metadata probing (falls back gracefully to cached thumbnails or basic metadata if absent)
 
 ## Installation
 
-Build and install using cargo:
+### Prebuilt Binaries
+
+**Linux & macOS (Shell):**
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/aissasell/lsi/releases/latest/download/lsi-installer.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/aissasell/lsi/releases/latest/download/lsi-installer.ps1 | iex"
+```
+
+### Build from Source (Cargo)
 
 ```bash
 cargo install --git https://github.com/aissasell/lsi.git
 ```
 
-To build a minimal binary without syntax highlighting or image decoding:
+To build a minimal binary without syntax highlighting or image/video decoding:
 
 ```bash
 cargo install --git https://github.com/aissasell/lsi.git --no-default-features
@@ -93,12 +107,12 @@ Every keyboard action can be remapped (or unbound with `[]`) in `$HOME/.config/l
 | `Ctrl+d` / `PgDn`, `Ctrl+u` / `PgUp` | Page down / up |
 | `g` / `Home`, `G` / `End` | Jump to first / last entry |
 | `l` / `Right` / `Enter` | Enter directory or open text file in `$EDITOR` (binary/media via system opener) |
-| `e` | Open selected file in `$VISUAL` / `$EDITOR` (fallback `vi` / `nano`) |
+| `e` | Open selected file in `$VISUAL` / `$EDITOR` (fallback `vi` / `nano`, or `nvim` / `vim` / `notepad` on Windows) |
 | `O` | Open selected file with system desktop opener (`xdg-open`) |
 | `h` / `Left` / `Backspace` | Go to parent directory |
 | `-` / `[` / `b` | Navigate back in history |
 | `+` / `=` / `]` / `w` | Navigate forward in history |
-| `~` | Jump to `$HOME` |
+| `~` | Jump to `$HOME` (`%USERPROFILE%` on Windows) |
 | `F5` / `Ctrl+r` | Refresh current directory |
 
 ### File Manipulation & Multi-Selection
@@ -173,7 +187,7 @@ function l() {
 
 ## Configuration (`config.toml`, `themes/*.toml` & `keybinds.toml`)
 
-`lsi` looks for optional TOML configuration in `$HOME/.config/lsi/`:
+`lsi` looks for optional TOML configuration in `$HOME/.config/lsi/` (or `%USERPROFILE%\.config\lsi\` on Windows):
 
 - `$HOME/.config/lsi/config.toml` — Overrides hard-coded defaults (explicit CLI flags take priority over `config.toml`).
 - `$HOME/.config/lsi/themes/<name>.toml` — Stores named custom themes. Set `theme = "<name>"` in `config.toml` (or pass `--theme <name>`) to load `<name>.toml` as custom; built-in theme files (like `catppuccin.toml`) are ignored, omitted colors fall back to `eza-dark`, and missing custom files fall back to `eza-dark`.

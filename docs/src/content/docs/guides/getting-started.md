@@ -3,7 +3,7 @@ title: Getting Started
 description: Install lsi, configure a Nerd Font, and launch your first interactive inline directory listing.
 ---
 
-`lsi` is an interactive `eza`-inspired terminal file explorer written in Rust. Unlike `ls` or `eza` (which print static text and exit) or fullscreen file managers (which take over your entire terminal window), `lsi` renders an interactive table **inline directly below your shell prompt**.
+`lsi` is an interactive `eza`-inspired terminal file explorer written in Rust for Linux, macOS, and Windows. Unlike `ls` or `eza` (which print static text and exit) or fullscreen file managers (which take over your entire terminal window), `lsi` renders an interactive table **inline directly below your shell prompt**.
 
 When you exit, your terminal scrollback remains intact—and with [Shell Integration](/lsi/guides/shell-integration/) you can change your shell's working directory to the folder you browsed to.
 
@@ -14,6 +14,22 @@ When you exit, your terminal scrollback remains intact—and with [Shell Integra
 - **Optional video tools (`ffmpegthumbnailer` or `ffmpeg` / `ffprobe`)** for extracting uncached video thumbnails and probing stream metadata (falls back to cached thumbnails or basic file metadata if absent)
 
 ## Installation
+
+### Prebuilt Binaries
+
+**Linux & macOS (Shell):**
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/aissasell/lsi/releases/latest/download/lsi-installer.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/aissasell/lsi/releases/latest/download/lsi-installer.ps1 | iex"
+```
+
+### Install from Source with Cargo
 
 Install directly from Git using Cargo:
 
