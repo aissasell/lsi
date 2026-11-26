@@ -223,6 +223,7 @@ impl App {
 
         let preview_config = PreviewConfig {
             syntax_highlight: cfg.syntax_highlight.unwrap_or(true),
+            syntax_theme: loaded.syntax_theme,
             image_preview: cfg.image_preview.unwrap_or(true),
             video_preview: cfg.video_preview.unwrap_or(true),
             image_protocol: cfg.image_protocol.unwrap_or(ImageProtocol::Auto),
@@ -1565,6 +1566,7 @@ impl App {
                 entry: selected,
                 pane_size: self.preview_area,
                 show_hidden: self.show_hidden,
+                ui_theme_name: self.theme_name,
                 is_light_theme: self.theme().is_light(),
                 config: self.preview_config.clone(),
             });

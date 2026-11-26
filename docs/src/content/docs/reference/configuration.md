@@ -22,6 +22,7 @@ If `config.toml` contains a syntax or type error, `lsi` falls back to defaults.
 | `show_icons` | `icons` | `true` \| `false` | `true` | Show or hide Nerd Font icons |
 | `show_preview` | `preview` | `true` \| `false` | `false` | Open with the side-by-side preview pane enabled |
 | `syntax_highlight` | | `true` \| `false` | `true` | Enable pure-Rust `syntect` syntax highlighting in text previews |
+| `syntax_theme` | | `"auto"` \| built-in `two-face` theme name \| `<name>` matching `$HOME/.config/lsi/themes/<name>.tmTheme` | `"auto"` | Colorscheme for text syntax highlighting (`"auto"` pairs with the active UI theme; custom `.tmTheme` files override built-ins of the same name) |
 | `image_preview` | | `true` \| `false` | `true` | Decode & render raster images (`png`, `jpeg`, `gif`, `webp`, `bmp`, `ico`) in the preview pane |
 | `video_preview` | | `true` \| `false` | `true` | Preview cached or CLI-extracted (`ffmpegthumbnailer` / `ffmpeg`) video thumbnails with `ffprobe` metadata fallback |
 | `image_protocol` | | `"auto"` \| `"kitty"` \| `"sixel"` \| `"iterm2"` \| `"halfblocks"` \| `"off"` (`"none"`) | `"auto"` | Preferred terminal graphics protocol for image previews |
@@ -47,6 +48,7 @@ show_size = true
 show_icons = true
 show_preview = false
 syntax_highlight = true
+# syntax_theme = "auto"
 image_preview = true
 video_preview = true
 image_protocol = "auto"

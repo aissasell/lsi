@@ -1,9 +1,7 @@
 #[cfg(any(feature = "image-preview", test))]
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io;
-#[cfg(feature = "image-preview")]
-use std::io::Read;
+use std::io::{self, Read};
 #[cfg(all(unix, any(feature = "image-preview", test)))]
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -56,6 +54,38 @@ pub fn is_video_extension(ext: &str) -> bool {
             | "mts"
             | "m2ts"
     )
+}
+
+/// Returns `true` for extensions shared by plain-text TypeScript sources and MPEG-TS video streams.
+pub fn is_ambiguous_video_extension(ext: &str) -> bool {
+    matches!(ext.to_ascii_lowercase().as_str(), "ts" | "mts")
+}
+
+/// Probes leading bytes of `path` to distinguish binary MPEG-TS streams from UTF-8 text files.
+pub fn looks_like_mpeg_ts_video(path: &Path) -> bool {
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut buf = [0_u8; 1024];
+    let n = match file.read(&mut buf) {
+        Ok(0) | Err(_) => return false,
+        Ok(n) => n,
+    };
+    let slice = &buf[..n];
+
+    if slice.contains(&0) {
+        return true;
+    }
+    // 188-byte MPEG-TS packet sync byte (0x47) across three consecutive packets.
+    if n >= 377 && slice[0] == 0x47 && slice[188] == 0x47 && slice[376] == 0x47 {
+        return true;
+    }
+    // 192-byte BDAV MPEG-TS packet sync byte (4-byte timestamp + 0x47) across three packets.
+    if n >= 389 && slice[4] == 0x47 && slice[196] == 0x47 && slice[388] == 0x47 {
+        return true;
+    }
+    matches!(std::str::from_utf8(slice), Err(err) if err.error_len().is_some())
 }
 
 /// CLI executable names or paths used for video thumbnail extraction and metadata probing.
@@ -1347,6 +1377,7 @@ mod tests {
         let cfg = PreviewConfig::default();
         let opts = PreviewBuildOpts {
             show_hidden: false,
+            ui_theme_name: crate::theme::ThemeName::EzaDark,
             is_light_theme: false,
             pane_size: (32, 16),
             config: &cfg,
@@ -1415,6 +1446,7 @@ mod tests {
         let cfg = PreviewConfig::default();
         let opts = PreviewBuildOpts {
             show_hidden: false,
+            ui_theme_name: crate::theme::ThemeName::EzaDark,
             is_light_theme: false,
             pane_size: (32, 16),
             config: &cfg,
@@ -1546,6 +1578,7 @@ bit_rate=4200000
         let cfg = PreviewConfig::default();
         let opts = PreviewBuildOpts {
             show_hidden: false,
+            ui_theme_name: crate::theme::ThemeName::EzaDark,
             is_light_theme: false,
             pane_size: (40, 16),
             config: &cfg,
@@ -1666,6 +1699,7 @@ bit_rate=4200000
         let cfg = PreviewConfig::default();
         let opts = PreviewBuildOpts {
             show_hidden: false,
+            ui_theme_name: crate::theme::ThemeName::EzaDark,
             is_light_theme: false,
             pane_size: (40, 18),
             config: &cfg,

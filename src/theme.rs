@@ -3,7 +3,7 @@ use ratatui::style::Color;
 use serde::Deserialize;
 
 /// Built-in and custom color themes supported by `lsi`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ThemeName {
     Custom,
     #[default]

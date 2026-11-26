@@ -27,13 +27,18 @@ use serde::Deserialize;
 #[cfg(feature = "syntax-highlight")]
 use syntect::{
     easy::HighlightLines,
-    highlighting::{FontStyle, ThemeSet},
-    parsing::SyntaxSet,
+    highlighting::{FontStyle, Theme as SyntectTheme, ThemeSet},
+    parsing::{SyntaxReference, SyntaxSet},
 };
+#[cfg(feature = "syntax-highlight")]
+use two_face::theme::{EmbeddedLazyThemeSet, EmbeddedThemeName};
 
 use crate::cli::SortField;
 use crate::fs_entry::{read_directory_with_cache, FileEntry, IdentityCache};
-use crate::video_preview::{build_video_preview, is_video_extension};
+use crate::theme::ThemeName;
+use crate::video_preview::{
+    build_video_preview, is_ambiguous_video_extension, is_video_extension, looks_like_mpeg_ts_video,
+};
 #[cfg(feature = "image-preview")]
 use crate::video_preview::{has_cached_thumbnail, VIDEO_DEBOUNCE_MS};
 
@@ -63,10 +68,78 @@ pub enum ImageProtocol {
     Off,
 }
 
+/// Configured syntax highlighting colorscheme for text previews.
+#[derive(Clone, Default)]
+pub enum SyntaxThemeSelection {
+    #[default]
+    Auto,
+    #[cfg(feature = "syntax-highlight")]
+    Embedded(EmbeddedThemeName),
+    #[cfg(feature = "syntax-highlight")]
+    Custom {
+        name: String,
+        theme: Arc<SyntectTheme>,
+    },
+}
+
+impl std::fmt::Debug for SyntaxThemeSelection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("Auto"),
+            #[cfg(feature = "syntax-highlight")]
+            Self::Embedded(name) => f.debug_tuple("Embedded").field(name).finish(),
+            #[cfg(feature = "syntax-highlight")]
+            Self::Custom { name, .. } => f.debug_struct("Custom").field("name", name).finish(),
+        }
+    }
+}
+
+impl PartialEq for SyntaxThemeSelection {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Auto, Self::Auto) => true,
+            #[cfg(feature = "syntax-highlight")]
+            (Self::Embedded(a), Self::Embedded(b)) => a == b,
+            #[cfg(feature = "syntax-highlight")]
+            (
+                Self::Custom {
+                    name: na,
+                    theme: ta,
+                },
+                Self::Custom {
+                    name: nb,
+                    theme: tb,
+                },
+            ) => na == nb && Arc::ptr_eq(ta, tb),
+            #[cfg(feature = "syntax-highlight")]
+            _ => false,
+        }
+    }
+}
+
+impl Eq for SyntaxThemeSelection {}
+
+impl std::hash::Hash for SyntaxThemeSelection {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::Auto => {}
+            #[cfg(feature = "syntax-highlight")]
+            Self::Embedded(name) => name.hash(state),
+            #[cfg(feature = "syntax-highlight")]
+            Self::Custom { name, theme } => {
+                name.hash(state);
+                Arc::as_ptr(theme).hash(state);
+            }
+        }
+    }
+}
+
 /// Runtime preview behavior configured via `config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PreviewConfig {
     pub syntax_highlight: bool,
+    pub syntax_theme: SyntaxThemeSelection,
     pub image_preview: bool,
     pub video_preview: bool,
     pub image_protocol: ImageProtocol,
@@ -77,6 +150,7 @@ impl Default for PreviewConfig {
     fn default() -> Self {
         Self {
             syntax_highlight: true,
+            syntax_theme: SyntaxThemeSelection::Auto,
             image_preview: true,
             video_preview: true,
             image_protocol: ImageProtocol::Auto,
@@ -181,6 +255,7 @@ pub struct PreviewRequest {
     pub entry: FileEntry,
     pub pane_size: (u16, u16),
     pub show_hidden: bool,
+    pub ui_theme_name: ThemeName,
     pub is_light_theme: bool,
     pub config: PreviewConfig,
 }
@@ -268,13 +343,40 @@ impl Drop for PreviewWorker {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum SyntaxThemeCacheKey {
+    Auto { ui_theme: ThemeName, is_light: bool },
+    #[cfg(feature = "syntax-highlight")]
+    Embedded(EmbeddedThemeName),
+    #[cfg(feature = "syntax-highlight")]
+    Custom { name: String, ptr: usize },
+}
+
+impl SyntaxThemeCacheKey {
+    fn from_request(req: &PreviewRequest) -> Self {
+        match &req.config.syntax_theme {
+            SyntaxThemeSelection::Auto => Self::Auto {
+                ui_theme: req.ui_theme_name,
+                is_light: req.is_light_theme,
+            },
+            #[cfg(feature = "syntax-highlight")]
+            SyntaxThemeSelection::Embedded(name) => Self::Embedded(*name),
+            #[cfg(feature = "syntax-highlight")]
+            SyntaxThemeSelection::Custom { name, theme } => Self::Custom {
+                name: name.clone(),
+                ptr: Arc::as_ptr(theme) as usize,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PreviewCacheKey {
     path: PathBuf,
     modified: Option<SystemTime>,
     size: u64,
     pane_size: (u16, u16),
     show_hidden: bool,
-    is_light_theme: bool,
+    syntax_theme: SyntaxThemeCacheKey,
     syntax_highlight: bool,
     image_preview: bool,
     video_preview: bool,
@@ -295,7 +397,7 @@ impl PreviewCacheKey {
             size: req.entry.size,
             pane_size,
             show_hidden: req.show_hidden,
-            is_light_theme: req.is_light_theme,
+            syntax_theme: SyntaxThemeCacheKey::from_request(req),
             syntax_highlight: req.config.syntax_highlight,
             image_preview: req.config.image_preview,
             video_preview: req.config.video_preview,
@@ -321,6 +423,16 @@ fn is_image_request(req: &PreviewRequest) -> bool {
     }
 }
 
+fn is_video_entry(entry: &FileEntry) -> bool {
+    if !is_video_extension(&entry.extension) {
+        return false;
+    }
+    if is_ambiguous_video_extension(&entry.extension) {
+        return looks_like_mpeg_ts_video(&entry.path);
+    }
+    true
+}
+
 fn is_video_thumbnail_request(req: &PreviewRequest) -> bool {
     #[cfg(feature = "image-preview")]
     {
@@ -329,7 +441,7 @@ fn is_video_thumbnail_request(req: &PreviewRequest) -> bool {
             && req.config.video_preview
             && req.config.image_preview
             && req.config.image_protocol != ImageProtocol::Off
-            && is_video_extension(&req.entry.extension)
+            && is_video_entry(&req.entry)
     }
     #[cfg(not(feature = "image-preview"))]
     {
@@ -496,6 +608,7 @@ fn worker_loop(
 
         let opts = PreviewBuildOpts {
             show_hidden: req.show_hidden,
+            ui_theme_name: req.ui_theme_name,
             is_light_theme: req.is_light_theme,
             pane_size: req.pane_size,
             config: &req.config,
@@ -539,6 +652,7 @@ fn worker_loop(
 /// Options used when synchronously constructing a preview.
 pub struct PreviewBuildOpts<'a> {
     pub show_hidden: bool,
+    pub ui_theme_name: ThemeName,
     pub is_light_theme: bool,
     pub pane_size: (u16, u16),
     pub config: &'a PreviewConfig,
@@ -681,7 +795,7 @@ fn build_preview_with_cancel(
         }
     }
 
-    if is_video_extension(&entry.extension) {
+    if is_video_entry(entry) {
         return build_video_preview(entry, opts, is_cancelled);
     }
 
@@ -721,10 +835,17 @@ fn build_preview_with_cancel(
             &entry.path,
             &entry.extension,
             &raw_lines,
+            opts.ui_theme_name,
             opts.is_light_theme,
+            &opts.config.syntax_theme,
         )
     } else {
-        let _ = (opts.is_light_theme, opts.pane_size);
+        let _ = (
+            opts.ui_theme_name,
+            opts.is_light_theme,
+            &opts.config.syntax_theme,
+            opts.pane_size,
+        );
         (plain_lines(&raw_lines), None)
     };
 
@@ -852,14 +973,184 @@ fn plain_lines(raw_lines: &[String]) -> Vec<PreviewLine> {
 }
 
 #[cfg(feature = "syntax-highlight")]
+fn non_plain(syntax: Option<&SyntaxReference>) -> Option<&SyntaxReference> {
+    syntax.filter(|s| s.name != "Plain Text")
+}
+
+#[cfg(feature = "syntax-highlight")]
+fn find_first_syntax<'a>(
+    ss: &'a SyntaxSet,
+    candidates: &[&str],
+) -> Option<&'a SyntaxReference> {
+    candidates.iter().find_map(|token| {
+        non_plain(ss.find_syntax_by_token(token))
+            .or_else(|| non_plain(ss.find_syntax_by_extension(token)))
+    })
+}
+
+#[cfg(feature = "syntax-highlight")]
+fn fallback_candidates_for_filename(name: &str) -> Option<&'static [&'static str]> {
+    match name {
+        "cargo.lock" | "uv.lock" | "poetry.lock" | "pdm.lock" | "pipfile" => {
+            Some(&["toml", "ini"])
+        }
+        "flake.lock" | ".prettierrc" | ".eslintrc" | ".babelrc" | ".swcrc" => Some(&["json"]),
+        ".gitignore" | ".dockerignore" | ".npmignore" | ".prettierignore" | ".eslintignore"
+        | ".hgignore" => Some(&["gitignore", "sh"]),
+        ".editorconfig" | ".gitconfig" | ".gitmodules" | ".npmrc" | ".yarnrc" => Some(&["ini"]),
+        ".env" => Some(&["env", "dotenv", "sh"]),
+        _ if name.starts_with(".env.") => Some(&["env", "dotenv", "sh"]),
+        "dockerfile" | "containerfile" => Some(&["Dockerfile", "sh"]),
+        _ if name.starts_with("dockerfile.") || name.starts_with("containerfile.") => {
+            Some(&["Dockerfile", "sh"])
+        }
+        "justfile" | ".justfile" => Some(&["just", "Makefile"]),
+        "cmakelists.txt" => Some(&["cmake", "CMake"]),
+        "gemfile" | "rakefile" | "podfile" | "vagrantfile" | "brewfile" => Some(&["rb"]),
+        ".bashrc" | ".bash_profile" | ".bash_logout" | ".profile" | ".zshrc" | ".zshenv"
+        | ".zprofile" | ".zlogin" | ".zlogout" | ".kshrc" => Some(&["sh"]),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "syntax-highlight")]
+fn fallback_candidates_for_extension(ext: &str) -> Option<&'static [&'static str]> {
+    match ext {
+        "mdx" => Some(&["md"]),
+        "mjs" | "cjs" => Some(&["js"]),
+        "jsx" => Some(&["tsx", "js"]),
+        "mts" | "cts" => Some(&["ts", "js"]),
+        "astro" => Some(&["html"]),
+        "jsonc" | "json5" | "webmanifest" => Some(&["json", "js"]),
+        "env" => Some(&["env", "dotenv", "sh"]),
+        "conf" | "cfg" | "properties" | "editorconfig" => Some(&["ini"]),
+        "svg" | "plist" | "xhtml" | "csproj" | "fsproj" | "vbproj" | "props" | "targets" => {
+            Some(&["xml"])
+        }
+        "gradle" => Some(&["groovy"]),
+        "zsh" => Some(&["sh"]),
+        "dockerfile" | "containerfile" => Some(&["Dockerfile", "sh"]),
+        "just" => Some(&["just", "Makefile"]),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "syntax-highlight")]
+fn find_fallback_syntax<'a>(
+    ss: &'a SyntaxSet,
+    path: &Path,
+    ext: &str,
+) -> Option<&'a SyntaxReference> {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        let lower_name = name.to_ascii_lowercase();
+        if let Some(candidates) = fallback_candidates_for_filename(&lower_name) {
+            if let Some(syntax) = find_first_syntax(ss, candidates) {
+                return Some(syntax);
+            }
+        }
+    }
+
+    if !ext.is_empty() {
+        let lower_ext = ext.to_ascii_lowercase();
+        if let Some(candidates) = fallback_candidates_for_extension(&lower_ext) {
+            if let Some(syntax) = find_first_syntax(ss, candidates) {
+                return Some(syntax);
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(feature = "syntax-highlight")]
+fn resolve_syntax<'a>(
+    ss: &'a SyntaxSet,
+    path: &Path,
+    ext: &str,
+    first_line: Option<&str>,
+) -> Option<&'a SyntaxReference> {
+    let path_str = path.to_string_lossy();
+    non_plain(ss.find_syntax_by_path(&path_str))
+        .or_else(|| {
+            if ext.is_empty() {
+                None
+            } else {
+                non_plain(ss.find_syntax_by_extension(ext))
+            }
+        })
+        .or_else(|| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|name| non_plain(ss.find_syntax_by_extension(name)))
+        })
+        .or_else(|| first_line.and_then(|first| non_plain(ss.find_syntax_by_first_line(first))))
+        .or_else(|| find_fallback_syntax(ss, path, ext))
+}
+
+#[cfg(feature = "syntax-highlight")]
+fn normalize_theme_key(raw: &str) -> String {
+    raw.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// Parses an embedded `two-face` syntax theme name (case- and punctuation-insensitive).
+#[cfg(feature = "syntax-highlight")]
+pub fn parse_embedded_syntax_theme(raw: &str) -> Option<EmbeddedThemeName> {
+    let key = normalize_theme_key(raw);
+    if key.is_empty() {
+        return None;
+    }
+    if key == "leet" {
+        return Some(EmbeddedThemeName::Leet);
+    }
+    EmbeddedLazyThemeSet::theme_names()
+        .iter()
+        .copied()
+        .find(|name| normalize_theme_key(name.as_name()) == key)
+}
+
+/// Returns the default `two-face` syntax highlighting theme paired with an `lsi` UI theme.
+#[cfg(feature = "syntax-highlight")]
+pub const fn auto_embedded_theme(ui_theme: ThemeName, is_light_theme: bool) -> EmbeddedThemeName {
+    match ui_theme {
+        ThemeName::EzaDark => EmbeddedThemeName::Base16OceanDark,
+        ThemeName::Catppuccin => EmbeddedThemeName::CatppuccinMocha,
+        ThemeName::Dracula => EmbeddedThemeName::Dracula,
+        ThemeName::Nord => EmbeddedThemeName::Nord,
+        ThemeName::Gruvbox => EmbeddedThemeName::GruvboxDark,
+        ThemeName::TokyoNight => EmbeddedThemeName::TwoDark,
+        ThemeName::SolarizedLight => EmbeddedThemeName::SolarizedLight,
+        ThemeName::Custom => {
+            if is_light_theme {
+                EmbeddedThemeName::InspiredGithub
+            } else {
+                EmbeddedThemeName::Base16OceanDark
+            }
+        }
+    }
+}
+
+/// Loads a `.tmTheme` file from disk using `syntect`'s pure-Rust plist parser.
+#[cfg(feature = "syntax-highlight")]
+pub fn load_custom_syntax_theme(path: &Path) -> Result<Arc<SyntectTheme>, String> {
+    ThemeSet::get_theme(path)
+        .map(Arc::new)
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(feature = "syntax-highlight")]
 fn highlight_or_plain(
     path: &Path,
     ext: &str,
     raw_lines: &[String],
+    ui_theme: ThemeName,
     is_light_theme: bool,
+    syntax_theme: &SyntaxThemeSelection,
 ) -> (Vec<PreviewLine>, Option<String>) {
     static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
-    static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
+    static THEME_SET: OnceLock<EmbeddedLazyThemeSet> = OnceLock::new();
 
     if raw_lines.is_empty()
         || raw_lines
@@ -869,47 +1160,18 @@ fn highlight_or_plain(
         return (plain_lines(raw_lines), None);
     }
 
-    let ss = SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines);
-    let ts = THEME_SET.get_or_init(ThemeSet::load_defaults);
+    let ss = SYNTAX_SET.get_or_init(two_face::syntax::extra_newlines);
+    let ts = THEME_SET.get_or_init(two_face::theme::extra);
 
-    let path_str = path.to_string_lossy();
-    let syntax = ss
-        .find_syntax_by_path(&path_str)
-        .or_else(|| {
-            if ext.is_empty() {
-                None
-            } else {
-                ss.find_syntax_by_extension(ext)
-            }
-        })
-        .or_else(|| {
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .and_then(|name| ss.find_syntax_by_extension(name))
-        })
-        .or_else(|| {
-            raw_lines
-                .first()
-                .and_then(|first| ss.find_syntax_by_first_line(first))
-        })
-        .unwrap_or_else(|| ss.find_syntax_plain_text());
-
-    if syntax.name == "Plain Text" {
-        return (plain_lines(raw_lines), None);
-    }
-
-    let theme_key = if is_light_theme {
-        "InspiredGitHub"
-    } else {
-        "base16-ocean.dark"
-    };
-    let Some(syn_theme) = ts
-        .themes
-        .get(theme_key)
-        .or_else(|| ts.themes.get("base16-ocean.dark"))
-        .or_else(|| ts.themes.values().next())
+    let Some(syntax) = resolve_syntax(ss, path, ext, raw_lines.first().map(String::as_str))
     else {
         return (plain_lines(raw_lines), None);
+    };
+
+    let syn_theme = match syntax_theme {
+        SyntaxThemeSelection::Auto => ts.get(auto_embedded_theme(ui_theme, is_light_theme)),
+        SyntaxThemeSelection::Embedded(name) => ts.get(*name),
+        SyntaxThemeSelection::Custom { theme, .. } => theme.as_ref(),
     };
 
     let mut highlighter = HighlightLines::new(syntax, syn_theme);
@@ -967,7 +1229,9 @@ fn highlight_or_plain(
     _path: &Path,
     _ext: &str,
     raw_lines: &[String],
+    _ui_theme: ThemeName,
     _is_light_theme: bool,
+    _syntax_theme: &SyntaxThemeSelection,
 ) -> (Vec<PreviewLine>, Option<String>) {
     (plain_lines(raw_lines), None)
 }
@@ -1024,6 +1288,7 @@ mod tests {
         let cfg = PreviewConfig::default();
         let opts = PreviewBuildOpts {
             show_hidden: false,
+            ui_theme_name: ThemeName::EzaDark,
             is_light_theme: false,
             pane_size: (40, 20),
             config: &cfg,
@@ -1058,6 +1323,268 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "syntax-highlight")]
+    #[test]
+    fn highlights_extended_formats_and_common_aliases() {
+        let dir = make_temp_dir("extended_syntax");
+        let highlighted_cases = [
+            (
+                "config.toml",
+                "[package]\nname = \"lsi\"\nversion = \"1.3.0\"\n",
+                Some("toml"),
+            ),
+            (
+                "app.ts",
+                "export const answer: number = 42;\n",
+                Some("typescript"),
+            ),
+            (
+                "mod.mts",
+                "export type Id = string;\n",
+                Some("typescript"),
+            ),
+            (
+                "Dockerfile",
+                "FROM rust:1.88\nRUN cargo build --release\n",
+                None,
+            ),
+            ("config.fish", "set -gx EDITOR nvim\n", None),
+            ("flake.nix", "{ description = \"lsi\"; }\n", None),
+            (
+                "component.jsx",
+                "export const App = () => <div className=\"ok\">hi</div>;\n",
+                None,
+            ),
+            ("main.zig", "pub fn main() void {}\n", None),
+            ("page.mdx", "# Heading\n\nSome **bold** text.\n", None),
+            (
+                "astro.config.mjs",
+                "export default { site: \"https://example.com\" };\n",
+                None,
+            ),
+            (
+                "Cargo.lock",
+                "[[package]]\nname = \"lsi\"\nversion = \"1.3.0\"\n",
+                Some("toml"),
+            ),
+            (".env.local", "RUST_LOG=debug\n", None),
+            ("script", "#!/usr/bin/env python3\nprint(\"hi\")\n", None),
+        ];
+
+        for (name, content, _) in &highlighted_cases {
+            fs::write(dir.join(name), content).unwrap();
+        }
+        fs::write(dir.join("notes.txt"), "just plain notes\n").unwrap();
+
+        let mut mpeg_ts = vec![0_u8; 564];
+        mpeg_ts[0] = 0x47;
+        mpeg_ts[188] = 0x47;
+        mpeg_ts[376] = 0x47;
+        fs::write(dir.join("stream.ts"), &mpeg_ts).unwrap();
+
+        let mut cache = IdentityCache::new();
+        let entries = read_directory_with_cache(&dir, &mut cache).unwrap();
+        let cfg = PreviewConfig::default();
+        let opts = PreviewBuildOpts {
+            show_hidden: true,
+            ui_theme_name: ThemeName::EzaDark,
+            is_light_theme: false,
+            pane_size: (40, 20),
+            config: &cfg,
+            picker: None,
+        };
+
+        for (name, _, expected_substr) in &highlighted_cases {
+            let entry = entries
+                .iter()
+                .find(|e| e.name == *name)
+                .unwrap_or_else(|| panic!("missing test entry {name}"));
+            match build_preview_sync(entry, &mut cache, &opts) {
+                PreviewData::Text {
+                    lines, syntax_name, ..
+                } => {
+                    let syntax_label = syntax_name
+                        .as_deref()
+                        .unwrap_or_else(|| panic!("expected syntax_name for {name}"));
+                    if let Some(substr) = expected_substr {
+                        assert!(
+                            syntax_label.to_ascii_lowercase().contains(substr),
+                            "expected syntax '{syntax_label}' for {name} to contain '{substr}'"
+                        );
+                    }
+                    assert!(
+                        lines.iter().flatten().any(|seg| seg.fg.is_some()),
+                        "expected colored highlight segments for {name} (syntax: {syntax_label})"
+                    );
+                }
+                other => panic!("expected highlighted Text preview for {name}, got {other:?}"),
+            }
+        }
+
+        let notes_entry = entries.iter().find(|e| e.name == "notes.txt").unwrap();
+        match build_preview_sync(notes_entry, &mut cache, &opts) {
+            PreviewData::Text {
+                lines, syntax_name, ..
+            } => {
+                assert!(syntax_name.is_none());
+                assert_eq!(lines.len(), 1);
+                assert!(lines[0].iter().all(|seg| seg.fg.is_none()));
+            }
+            other => panic!("expected plain Text preview for notes.txt, got {other:?}"),
+        }
+
+        let stream_entry = entries.iter().find(|e| e.name == "stream.ts").unwrap();
+        match build_preview_sync(stream_entry, &mut cache, &opts) {
+            PreviewData::Metadata { title, .. } => {
+                assert_eq!(title, "Video file");
+            }
+            other => panic!("expected Video metadata preview for binary stream.ts, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "syntax-highlight")]
+    #[test]
+    fn parses_embedded_syntax_theme_names_and_aliases() {
+        assert_eq!(
+            parse_embedded_syntax_theme("catppuccin-mocha"),
+            Some(EmbeddedThemeName::CatppuccinMocha)
+        );
+        assert_eq!(
+            parse_embedded_syntax_theme("Catppuccin Mocha"),
+            Some(EmbeddedThemeName::CatppuccinMocha)
+        );
+        assert_eq!(
+            parse_embedded_syntax_theme("Solarized (light)"),
+            Some(EmbeddedThemeName::SolarizedLight)
+        );
+        assert_eq!(
+            parse_embedded_syntax_theme("solarized-light"),
+            Some(EmbeddedThemeName::SolarizedLight)
+        );
+        assert_eq!(
+            parse_embedded_syntax_theme("gruvbox-dark"),
+            Some(EmbeddedThemeName::GruvboxDark)
+        );
+        assert_eq!(
+            parse_embedded_syntax_theme("base16-ocean.dark"),
+            Some(EmbeddedThemeName::Base16OceanDark)
+        );
+        assert_eq!(
+            parse_embedded_syntax_theme("base16-ocean-dark"),
+            Some(EmbeddedThemeName::Base16OceanDark)
+        );
+        assert_eq!(
+            parse_embedded_syntax_theme("1337"),
+            Some(EmbeddedThemeName::Leet)
+        );
+        assert_eq!(
+            parse_embedded_syntax_theme("leet"),
+            Some(EmbeddedThemeName::Leet)
+        );
+        assert_eq!(parse_embedded_syntax_theme("does-not-exist"), None);
+        assert_eq!(parse_embedded_syntax_theme("   "), None);
+    }
+
+    #[cfg(feature = "syntax-highlight")]
+    #[test]
+    fn applies_auto_embedded_and_custom_tmtheme_colorschemes() {
+        assert_eq!(
+            auto_embedded_theme(ThemeName::EzaDark, false),
+            EmbeddedThemeName::Base16OceanDark
+        );
+
+        let dir = make_temp_dir("syntax_themes");
+        fs::write(
+            dir.join("test.toml"),
+            "[package]\nname = \"lsi\"\nversion = \"1.3.0\"\n",
+        )
+        .unwrap();
+        let tmtheme_path = dir.join("magenta.tmTheme");
+        fs::write(
+            &tmtheme_path,
+            r##"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>name</key>
+  <string>MagentaTest</string>
+  <key>settings</key>
+  <array>
+    <dict>
+      <key>settings</key>
+      <dict>
+        <key>background</key>
+        <string>#111111</string>
+        <key>foreground</key>
+        <string>#ff00aa</string>
+      </dict>
+    </dict>
+  </array>
+</dict>
+</plist>
+"##,
+        )
+        .unwrap();
+
+        let mut cache = IdentityCache::new();
+        let entries = read_directory_with_cache(&dir, &mut cache).unwrap();
+        let toml_entry = entries.iter().find(|e| e.name == "test.toml").unwrap();
+
+        let mut render_with = |ui_theme_name: ThemeName,
+                           is_light_theme: bool,
+                           syntax_theme: SyntaxThemeSelection| {
+            let cfg = PreviewConfig {
+                syntax_theme,
+                ..PreviewConfig::default()
+            };
+            let opts = PreviewBuildOpts {
+                show_hidden: false,
+                ui_theme_name,
+                is_light_theme,
+                pane_size: (40, 20),
+                config: &cfg,
+                picker: None,
+            };
+            match build_preview_sync(toml_entry, &mut cache, &opts) {
+                PreviewData::Text { lines, .. } => lines,
+                other => panic!("expected Text preview, got {other:?}"),
+            }
+        };
+
+        let catppuccin_lines = render_with(ThemeName::Catppuccin, false, SyntaxThemeSelection::Auto);
+        let gruvbox_lines = render_with(ThemeName::Gruvbox, false, SyntaxThemeSelection::Auto);
+        let solarized_light_lines =
+            render_with(ThemeName::SolarizedLight, true, SyntaxThemeSelection::Auto);
+        assert_ne!(catppuccin_lines, gruvbox_lines);
+        assert_ne!(catppuccin_lines, solarized_light_lines);
+
+        let dracula_auto = render_with(ThemeName::Dracula, false, SyntaxThemeSelection::Auto);
+        let dracula_pinned = render_with(
+            ThemeName::SolarizedLight,
+            true,
+            SyntaxThemeSelection::Embedded(EmbeddedThemeName::Dracula),
+        );
+        assert_eq!(dracula_auto, dracula_pinned);
+
+        let custom_theme = load_custom_syntax_theme(&tmtheme_path).expect("valid .tmTheme");
+        let custom_lines = render_with(
+            ThemeName::EzaDark,
+            false,
+            SyntaxThemeSelection::Custom {
+                name: "magenta".to_string(),
+                theme: custom_theme,
+            },
+        );
+        assert!(custom_lines
+            .iter()
+            .flatten()
+            .any(|seg| seg.fg == Some(Color::Rgb(0xff, 0x00, 0xaa))));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[cfg(feature = "image-preview")]
     #[test]
     fn decodes_png_images_and_respects_size_and_protocol_limits() {
@@ -1077,6 +1604,7 @@ mod tests {
         let cfg = PreviewConfig::default();
         let opts = PreviewBuildOpts {
             show_hidden: false,
+            ui_theme_name: ThemeName::EzaDark,
             is_light_theme: false,
             pane_size: (30, 14),
             config: &cfg,
@@ -1103,6 +1631,7 @@ mod tests {
         };
         let small_opts = PreviewBuildOpts {
             show_hidden: false,
+            ui_theme_name: ThemeName::EzaDark,
             is_light_theme: false,
             pane_size: (30, 14),
             config: &small_cfg,
@@ -1146,6 +1675,7 @@ mod tests {
             entry: first,
             pane_size: (40, 16),
             show_hidden: false,
+            ui_theme_name: ThemeName::EzaDark,
             is_light_theme: false,
             config: PreviewConfig::default(),
         });
@@ -1154,6 +1684,7 @@ mod tests {
             entry: second.clone(),
             pane_size: (40, 16),
             show_hidden: false,
+            ui_theme_name: ThemeName::EzaDark,
             is_light_theme: false,
             config: PreviewConfig::default(),
         });
@@ -1181,6 +1712,7 @@ mod tests {
             entry: second,
             pane_size: (40, 16),
             show_hidden: false,
+            ui_theme_name: ThemeName::EzaDark,
             is_light_theme: false,
             config: PreviewConfig::default(),
         });

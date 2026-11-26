@@ -58,3 +58,20 @@ exec_fg = "#a6e3a1"
 ```
 
 See [Theme Reference (`themes/*.toml`)](/lsi/reference/theme-toml/) for the complete list of all 32 color keys.
+
+## Syntax Highlighting Colorschemes (`syntax_theme`)
+
+Code and config previews in the preview pane can also be styled independently via `syntax_theme` in `$HOME/.config/lsi/config.toml` (or `%USERPROFILE%\.config\lsi\config.toml` on Windows):
+
+- **Automatic UI pairing (`syntax_theme = "auto"`, default)**: Each built-in UI theme automatically pairs with a matching syntax palette when you launch or press `T` / `c` to cycle themes:
+  - `eza-dark` → `base16-ocean.dark`
+  - `catppuccin` → `Catppuccin Mocha`
+  - `dracula` → `Dracula`
+  - `nord` → `Nord`
+  - `gruvbox` → `gruvbox-dark`
+  - `tokyo-night` → `TwoDark`
+  - `solarized-light` → `Solarized (light)`
+  - Custom `.toml` UI themes → `InspiredGitHub` (light backgrounds) or `base16-ocean.dark` (dark backgrounds)
+- **Built-in `two-face` themes**: Set `syntax_theme` to any of the 32 bundled themes (matching is case- and punctuation-insensitive, so `"catppuccin-mocha"` and `"Catppuccin Mocha"` both work):
+  - `1337` (`leet`), `ansi`, `base16`, `base16-256`, `base16-eighties.dark`, `base16-mocha.dark`, `base16-ocean.dark`, `base16-ocean.light`, `Catppuccin Frappe`, `Catppuccin Latte`, `Catppuccin Macchiato`, `Catppuccin Mocha`, `Coldark-Cold`, `Coldark-Dark`, `DarkNeon`, `Dracula`, `GitHub`, `gruvbox-dark`, `gruvbox-light`, `InspiredGitHub`, `Monokai Extended`, `Monokai Extended Bright`, `Monokai Extended Light`, `Monokai Extended Origin`, `Nord`, `OneHalfDark`, `OneHalfLight`, `Solarized (dark)`, `Solarized (light)`, `Sublime Snazzy`, `TwoDark`, `zenburn`
+- **Custom `.tmTheme` files (`$HOME/.config/lsi/themes/<name>.tmTheme`)**: Drop any TextMate / Sublime Text / `bat` `.tmTheme` file into your `themes/` directory alongside UI `.toml` files and set `syntax_theme = "<name>"` in `config.toml`. Custom `.tmTheme` files take precedence over built-in syntax themes of the same name; if missing or malformed, `lsi` warns in the status bar and falls back to `"auto"`.
