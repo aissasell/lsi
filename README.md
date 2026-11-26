@@ -10,7 +10,7 @@
 
 `lsi` is an interactive directory listing tool written in Rust for Linux, macOS, and Windows. Inspired by `eza`, it renders inline directly below your shell prompt with Nerd Font icons, metadata columns, file operations, and a live preview pane.
 
-https://github.com/user-attachments/assets/68f05969-d8f0-4a57-b392-d1c0fecd0b5d
+<https://github.com/user-attachments/assets/68f05969-d8f0-4a57-b392-d1c0fecd0b5d>
 
 ## Highlights
 
@@ -20,7 +20,7 @@ https://github.com/user-attachments/assets/68f05969-d8f0-4a57-b392-d1c0fecd0b5d
 - **File operations**: Multi-select, copy/cut/paste, move to Trash or permanently delete, create, and inline rename.
 - **Side-by-side previews**: Asynchronous syntax highlighting, inline images (Kitty, iTerm2, Sixel, half-blocks), video thumbnails, and directory listings.
 - **Editor & shell integration**: Open files in `$VISUAL`/`$EDITOR` and optionally `cd` on exit via `--cwd-file`.
-- **Customizable**: 7 built-in themes plus optional `config.toml`, `themes/*.toml`, and `keybinds.toml`.
+- **Customizable**: 7 built-in UI themes, 32 built-in syntax highlighting themes, plus optional `config.toml`, `themes/*.toml`, `themes/*.tmTheme`, and `keybinds.toml`.
 
 ## Installation
 

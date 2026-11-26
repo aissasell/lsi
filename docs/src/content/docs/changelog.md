@@ -5,6 +5,17 @@ description: Release history and notable changes for lsi.
 
 All notable changes to `lsi` are documented on this page.
 
+## [1.4.0] — 2026-11-26
+
+### Added
+
+- **Extended syntax highlighting formats (`src/preview.rs`)**: Replaced `syntect`'s default syntax bundle with `two-face` (`syntect-fancy`, pure-Rust `fancy-regex`) to support a much broader range of formats including TOML, TypeScript/TSX, Dockerfile, Fish, Nix, Zig, Kotlin, Swift, INI, GraphQL, Svelte, Vue, Terraform, DotENV, and more, plus fallback filename/extension mappings for common aliases (`Cargo.lock`, `.env.*`, `.mdx`, `.jsx`, `.mjs`/`.cjs`, `.mts`/`.cts`, `Containerfile`, `justfile`, shell dotfiles, etc.).
+- **Configurable syntax highlighting colorschemes (`src/preview.rs`, `src/config.rs`, `src/app.rs`)**: Added `syntax_theme` in `config.toml` (default `"auto"`) supporting all 32 embedded `two-face` themes with automatic UI-theme pairing (`Catppuccin Mocha`, `Dracula`, `Nord`, `gruvbox-dark`, `TwoDark`, `Solarized (light)`, `base16-ocean.dark`), plus custom `.tmTheme` loading from `$HOME/.config/lsi/themes/<name>.tmTheme` (`%USERPROFILE%\.config\lsi\themes\<name>.tmTheme` on Windows) via pure-Rust `syntect` `plist-load`. Custom `.tmTheme` files override embedded themes of the same name.
+
+### Fixed
+
+- **TypeScript vs. MPEG-TS preview detection (`src/video_preview.rs`, `src/preview.rs`)**: `.ts` and `.mts` files now inspect leading bytes to distinguish UTF-8 TypeScript source files from binary MPEG-TS video streams during preview.
+
 ## [1.3.0] — 2026-11-25
 
 ### Added
