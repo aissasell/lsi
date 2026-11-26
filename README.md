@@ -5,6 +5,10 @@
 
 `lsi` is an interactive directory listing tool written in Rust with `ratatui` and `crossterm` for Linux, macOS, and Windows. Inspired by `eza`, it renders directory contents inline directly below your shell prompt while letting you scroll, preview files, navigate back and forth through the folder tree and history, toggle metadata columns, switch color themes, and open files right in your terminal editor.
 
+<video src="assets/lsi-demo.mp4" controls width="100%">
+  Your browser does not support the video tag.
+</video>
+
 ## Features
 
 - **Inline Viewport with Dynamic Height**: Renders cleanly inline below your prompt instead of taking over the alternate screen, growing dynamically with directory entries up to `--max-rows` (`-n`, default `20`).
