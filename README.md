@@ -36,6 +36,13 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/aissasell/lsi/releases/
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/aissasell/lsi/releases/latest/download/lsi-installer.ps1 | iex"
 ```
 
+**Fedora (Copr):**
+
+```sh
+sudo dnf copr enable aissasell/lsi
+sudo dnf install lsi
+```
+
 **From source (Cargo):**
 
 ```sh

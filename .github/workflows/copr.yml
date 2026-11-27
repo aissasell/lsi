@@ -1,0 +1,51 @@
+name: Fedora Copr
+
+on:
+  push:
+    tags:
+      - '**[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git tag, branch, or commit to build in Copr (defaults to current ref)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  copr-build:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+    steps:
+      - name: Install copr-cli
+        run: dnf -y install copr-cli
+
+      - name: Configure copr-cli
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+        run: |
+          if [ -z "$COPR_CONFIG" ]; then
+            echo "::error::Missing COPR_CONFIG secret. Copy your API config from https://copr.fedorainfracloud.org/api/ into the COPR_CONFIG repository secret."
+            exit 1
+          fi
+          mkdir -p ~/.config
+          chmod 700 ~/.config
+          printf '%s\n' "$COPR_CONFIG" > ~/.config/copr
+          chmod 600 ~/.config/copr
+
+      - name: Trigger Copr build
+        env:
+          COMMITTISH: ${{ inputs.ref || github.ref_name }}
+          CLONE_URL: https://github.com/${{ github.repository }}.git
+        run: |
+          echo "Submitting Copr build for aissasell/lsi at ref: $COMMITTISH"
+          copr-cli buildscm \
+            --clone-url "$CLONE_URL" \
+            --commit "$COMMITTISH" \
+            --method make_srpm \
+            --spec lsi.spec \
+            --nowait \
+            aissasell/lsi
