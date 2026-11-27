@@ -1,0 +1,27 @@
+name: "lsi"
+arch: "${ARCH}"
+platform: "linux"
+version: "${VERSION}"
+version_schema: "semver"
+release: "1"
+section: "utils"
+priority: "optional"
+maintainer: "Salem Ben Aissa <aissasell@gmail.com>"
+description: |
+  An interactive eza-like terminal file explorer with Nerd Fonts and themes
+  lsi renders inline directly below your shell prompt with Nerd Font icons,
+  metadata columns, file operations, and a live preview pane.
+homepage: "https://github.com/aissasell/lsi"
+license: "MIT"
+
+contents:
+  - src: "${SRC_DIR}/lsi"
+    dst: "/usr/bin/lsi"
+    file_info:
+      mode: 0755
+  - src: "${SRC_DIR}/README.md"
+    dst: "/usr/share/doc/lsi/README.md"
+    type: doc
+  - src: "${SRC_DIR}/LICENSE"
+    dst: "/usr/share/doc/lsi/copyright"
+    type: doc

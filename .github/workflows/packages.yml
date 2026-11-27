@@ -1,0 +1,220 @@
+name: Linux Packages (DEB, RPM & APT)
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing GitHub Release tag to package (e.g. 1.4.0)'
+        required: true
+        type: string
+      publish_apt:
+        description: 'Also publish .deb packages to the GitHub Pages APT repo (aissasell/apt)'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  NFPM_VERSION: "2.49.0"
+  APT_REPO: "aissasell/apt"
+
+jobs:
+  build-and-upload:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      is_prerelease: ${{ steps.resolve.outputs.is_prerelease }}
+    steps:
+      - name: Checkout packaging config
+        uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          TAG="${INPUT_TAG:-$RUN_TAG}"
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not determine release tag."
+            exit 1
+          fi
+          IS_PRERELEASE="$(gh release view "$TAG" --json isPrerelease -q .isPrerelease)"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Install nFPM
+        run: |
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb" -o /tmp/nfpm.deb
+          sudo dpkg -i /tmp/nfpm.deb
+          rm -f /tmp/nfpm.deb
+          nfpm --version
+
+      - name: Download cargo-dist Linux tarballs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          mkdir -p work/tarballs dist
+          gh release download "$TAG" \
+            --pattern 'lsi-x86_64-unknown-linux-gnu.tar.xz' \
+            --pattern 'lsi-aarch64-unknown-linux-gnu.tar.xz' \
+            --dir work/tarballs
+
+      - name: Build .deb and .rpm packages
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          for pair in "amd64:x86_64-unknown-linux-gnu" "arm64:aarch64-unknown-linux-gnu"; do
+            ARCH="${pair%%:*}"
+            TARGET="${pair#*:}"
+            mkdir -p "work/${ARCH}"
+            tar -xJf "work/tarballs/lsi-${TARGET}.tar.xz" -C "work/${ARCH}"
+            export ARCH
+            export SRC_DIR="work/${ARCH}/lsi-${TARGET}"
+            nfpm package --config packaging/nfpm.yaml --packager deb --target dist/
+            nfpm package --config packaging/nfpm.yaml --packager rpm --target dist/
+          done
+          ls -lh dist/
+
+      - name: Upload .deb and .rpm to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          gh release upload "$TAG" dist/*.deb dist/*.rpm --clobber
+
+      - name: Upload .deb packages for APT publishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-packages
+          path: dist/*.deb
+
+  publish-apt:
+    needs: build-and-upload
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.publish_apt) ||
+      (github.event_name != 'workflow_dispatch' && needs.build-and-upload.outputs.is_prerelease != 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check APT repository secrets
+        env:
+          APT_REPO_TOKEN: ${{ secrets.APT_REPO_TOKEN }}
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APT_REPO_TOKEN" ] || [ -z "$APT_GPG_PRIVATE_KEY" ]; then
+            echo "::error::Missing APT_REPO_TOKEN or APT_GPG_PRIVATE_KEY secret. Configure both in aissasell/lsi repository secrets (or set publish_apt=false on workflow_dispatch to skip APT publishing)."
+            exit 1
+          fi
+
+      - name: Install APT indexing and signing tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev apt-utils gnupg
+
+      - name: Download .deb packages
+        uses: actions/download-artifact@v4
+        with:
+          name: deb-packages
+          path: new-debs
+
+      - name: Clone APT repository
+        env:
+          APT_REPO_TOKEN: ${{ secrets.APT_REPO_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${APT_REPO_TOKEN}@github.com/${APT_REPO}.git" apt-repo
+          cd apt-repo
+          if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+            git checkout -b main
+          fi
+
+      - name: Update pool, regenerate multi-arch APT indices, and sign
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          export GNUPGHOME="$(mktemp -d)"
+          chmod 700 "$GNUPGHOME"
+          trap 'rm -rf "$GNUPGHOME"' EXIT
+
+          printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          KEY_ID="$(gpg --batch --with-colons --list-secret-keys | awk -F: '/^fpr:/ {print $10; exit}')"
+          if [ -z "$KEY_ID" ]; then
+            echo "::error::Failed to read GPG key fingerprint from APT_GPG_PRIVATE_KEY."
+            exit 1
+          fi
+
+          cd apt-repo
+          mkdir -p pool/main/l/lsi dists/stable/main/binary-amd64 dists/stable/main/binary-arm64
+          cp -f ../new-debs/*.deb pool/main/l/lsi/
+
+          gpg --batch --yes --armor --export "$KEY_ID" > pubkey.gpg
+          touch .nojekyll
+          if [ ! -f index.html ]; then
+            cat > index.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head><meta charset="utf-8"><title>aissasell APT Repository</title></head>
+          <body>
+            <h1>aissasell APT Repository</h1>
+            <pre>curl -fsSL https://aissasell.github.io/apt/pubkey.gpg | sudo gpg --dearmor -o /etc/apt/keyrings/aissasell.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/aissasell.gpg] https://aissasell.github.io/apt stable main" | sudo tee /etc/apt/sources.list.d/aissasell.list
+          sudo apt update && sudo apt install lsi</pre>
+          </body>
+          </html>
+          EOF
+          fi
+
+          for arch in amd64 arm64; do
+            dpkg-scanpackages --multiversion --arch "$arch" pool/main > "dists/stable/main/binary-${arch}/Packages"
+            gzip -9knf "dists/stable/main/binary-${arch}/Packages"
+          done
+
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Origin="aissasell" \
+            -o APT::FTPArchive::Release::Label="aissasell APT Repository" \
+            -o APT::FTPArchive::Release::Suite="stable" \
+            -o APT::FTPArchive::Release::Codename="stable" \
+            -o APT::FTPArchive::Release::Architectures="amd64 arm64" \
+            -o APT::FTPArchive::Release::Components="main" \
+            -o APT::FTPArchive::Release::Description="Debian and Ubuntu APT repository for lsi" \
+            release dists/stable > dists/stable/Release
+
+          GPG_SIGN_ARGS=(--batch --yes --digest-algo SHA256 -u "$KEY_ID")
+          if [ -n "${APT_GPG_PASSPHRASE:-}" ]; then
+            printf '%s' "$APT_GPG_PASSPHRASE" | gpg "${GPG_SIGN_ARGS[@]}" --pinentry-mode loopback --passphrase-fd 0 -abs -o dists/stable/Release.gpg dists/stable/Release
+            printf '%s' "$APT_GPG_PASSPHRASE" | gpg "${GPG_SIGN_ARGS[@]}" --pinentry-mode loopback --passphrase-fd 0 --clearsign -o dists/stable/InRelease dists/stable/Release
+          else
+            gpg "${GPG_SIGN_ARGS[@]}" -abs -o dists/stable/Release.gpg dists/stable/Release
+            gpg "${GPG_SIGN_ARGS[@]}" --clearsign -o dists/stable/InRelease dists/stable/Release
+          fi
+
+      - name: Commit and push APT repository
+        env:
+          TAG: ${{ needs.build-and-upload.outputs.tag }}
+        run: |
+          cd apt-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to APT repository."
+            exit 0
+          fi
+          git commit -m "Release lsi ${TAG}"
+          git push origin HEAD:main
