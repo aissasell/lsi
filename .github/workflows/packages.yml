@@ -89,6 +89,12 @@ jobs:
             nfpm package --config "work/${ARCH}/nfpm.yaml" --packager deb --target dist/
             nfpm package --config "work/${ARCH}/nfpm.yaml" --packager rpm --target dist/
           done
+          (
+            cd dist
+            for f in *.deb *.rpm; do
+              sha256sum "$f" > "${f}.sha256"
+            done
+          )
           ls -lh dist/
 
       - name: Upload .deb and .rpm to GitHub Release
@@ -96,7 +102,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
-          gh release upload "$TAG" dist/*.deb dist/*.rpm --clobber
+          gh release upload "$TAG" dist/*.deb dist/*.rpm dist/*.sha256 --clobber
+
+      - name: Update GitHub Release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TAG" --json body -q .body > /tmp/release-body.md
+          python3 packaging/update-release-notes.py \
+            --body-file /tmp/release-body.md \
+            --dist-dir dist \
+            --repo "$REPO" \
+            --tag "$TAG" \
+            --output /tmp/release-body-updated.md
+          gh release edit "$TAG" --notes-file /tmp/release-body-updated.md
 
       - name: Upload .deb packages for APT publishing
         uses: actions/upload-artifact@v4
